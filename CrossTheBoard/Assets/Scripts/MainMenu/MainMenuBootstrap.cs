@@ -2,67 +2,54 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.UI;
 using UnityEngine.UI;
 
 namespace CrossTheBoard.UI
 {
-    /// <summary>
-    /// Creates the main menu at runtime so the scene stays lightweight and the menu can be
-    /// moved to a dedicated scene later without rebuilding the visual hierarchy by hand.
-    /// </summary>
     [DefaultExecutionOrder(-100)]
     public sealed class MainMenuBootstrap : MonoBehaviour
     {
-        private static readonly Color Ink = Hex("10151F");
-        private static readonly Color Panel = Hex("19212D");
-        private static readonly Color PanelBright = Hex("222D3C");
-        private static readonly Color Cream = Hex("F3EFE4");
-        private static readonly Color Muted = Hex("91A0AF");
-        private static readonly Color Lime = Hex("C9F55C");
-        private static readonly Color Sky = Hex("58D5F7");
-        private static readonly Color Coral = Hex("FF7D68");
-        private static readonly Color Violet = Hex("A98BFF");
+        private static readonly Color Background = Hex("101722");
+        private static readonly Color Surface = Hex("1A2432");
+        private static readonly Color SurfaceHover = Hex("263447");
+        private static readonly Color TextPrimary = Hex("F5F1E8");
+        private static readonly Color TextSecondary = Hex("93A2B4");
+        private static readonly Color Accent = Hex("C9F55C");
 
+        private readonly List<NavigationItem> _navigationItems = new();
         private Font _font;
         private Sprite _roundedSprite;
         private Canvas _canvas;
-        private RectTransform _overlay;
-        private GameObject _dialog;
-        private Text _sectionLabel;
-        private readonly List<MenuCard> _menuCards = new();
-
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
-        private static void CreateMenu()
-        {
-            if (FindFirstObjectByType<MainMenuBootstrap>() != null)
-                return;
-
-            new GameObject("Main Menu UI").AddComponent<MainMenuBootstrap>();
-        }
+        private RectTransform _content;
+        private RectTransform _modalLayer;
 
         private void Awake()
         {
             _font = Font.CreateDynamicFontFromOSFont(
-                new[] { "Segoe UI", "Arial", "Liberation Sans" }, 48);
+                new[] { "Malgun Gothic", "Apple SD Gothic Neo", "Segoe UI", "Arial" }, 48);
             _roundedSprite = CreateRoundedSprite();
-            BuildEventSystem();
-            BuildCanvas();
-            BuildBackground();
-            BuildHeader();
-            BuildHero();
-            BuildNavigation();
-            BuildFooter();
-            BuildOverlay();
+
+            CreateEventSystem();
+            CreateCanvas();
+            CreateBackground();
+            CreateLogo();
+            CreateContent();
+            CreateBottomNavigation();
+            CreateModalLayer();
+            CreateSettingsButton();
+            SelectSection(MenuSection.Home);
         }
 
         private void Update()
         {
-            if (_dialog != null && UnityEngine.InputSystem.Keyboard.current?.escapeKey.wasPressedThisFrame == true)
-                CloseSection();
+            if (_modalLayer != null && _modalLayer.gameObject.activeSelf &&
+                Keyboard.current?.escapeKey.wasPressedThisFrame == true)
+                CloseModal();
         }
 
-        private void BuildEventSystem()
+        private void CreateEventSystem()
         {
             if (FindFirstObjectByType<EventSystem>() != null)
                 return;
@@ -71,271 +58,211 @@ namespace CrossTheBoard.UI
             eventSystem.transform.SetParent(transform, false);
         }
 
-        private void BuildCanvas()
+        private void CreateCanvas()
         {
-            var canvasObject = new GameObject("Main Menu Canvas", typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
-            canvasObject.transform.SetParent(transform, false);
-            _canvas = canvasObject.GetComponent<Canvas>();
+            var root = new GameObject("Main Menu Canvas", typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
+            root.transform.SetParent(transform, false);
+            _canvas = root.GetComponent<Canvas>();
             _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
             _canvas.sortingOrder = 100;
 
-            var scaler = canvasObject.GetComponent<CanvasScaler>();
+            var scaler = root.GetComponent<CanvasScaler>();
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            scaler.referenceResolution = new Vector2(1920, 1080);
+            scaler.referenceResolution = new Vector2(1920f, 1080f);
             scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
             scaler.matchWidthOrHeight = 0.5f;
         }
 
-        private void BuildBackground()
+        private void CreateBackground()
         {
-            var background = Rect("Background", _canvas.transform, Vector2.zero, Vector2.one);
-            Image(background, Ink);
+            var background = CreateRect("Background", _canvas.transform, Vector2.zero, Vector2.one);
+            AddImage(background, Background);
 
-            var upperGlow = Rect("Upper glow", background, new Vector2(0f, 0.48f), new Vector2(0.58f, 1f));
-            Image(upperGlow, new Color(0.08f, 0.31f, 0.33f, 0.28f));
+            var glow = CreateRect("Top Glow", background, new Vector2(0.18f, 0.62f), new Vector2(0.82f, 1f));
+            AddImage(glow, new Color(0.20f, 0.48f, 0.48f, 0.12f));
+            glow.GetComponent<Image>().raycastTarget = false;
 
-            var rightShade = Rect("Right shade", background, new Vector2(0.58f, 0f), Vector2.one);
-            Image(rightShade, new Color(0.025f, 0.035f, 0.055f, 0.6f));
-
-            var board = Rect("Board route", background, Vector2.zero, Vector2.one);
-            var route = board.gameObject.AddComponent<BoardRouteGraphic>();
-            route.raycastTarget = false;
-            route.color = new Color(0.45f, 0.88f, 0.8f, 0.16f);
-
-            CreateBoardToken(background, new Vector2(0.08f, 0.26f), 24f, Sky, 0.35f);
-            CreateBoardToken(background, new Vector2(0.27f, 0.71f), 14f, Lime, 0.32f);
-            CreateBoardToken(background, new Vector2(0.51f, 0.32f), 18f, Coral, 0.28f);
-            CreateBoardToken(background, new Vector2(0.84f, 0.83f), 12f, Violet, 0.3f);
+            var line = CreateRect("Accent Line", background, new Vector2(0.42f, 0.865f), new Vector2(0.58f, 0.869f));
+            AddImage(line, Accent);
+            line.GetComponent<Image>().raycastTarget = false;
         }
 
-        private void CreateBoardToken(Transform parent, Vector2 anchor, float size, Color color, float speed)
+        private void CreateLogo()
         {
-            var token = Rect("Floating token", parent, anchor, anchor, new Vector2(size, size));
-            token.anchoredPosition = Vector2.zero;
-            var image = Image(token, color, true);
-            image.raycastTarget = false;
-            var floater = token.gameObject.AddComponent<AmbientFloat>();
-            floater.amplitude = 9f;
-            floater.speed = speed;
-            floater.phase = anchor.x * 8f;
+            var logo = CreateRect("Logo", _canvas.transform, new Vector2(0.33f, 0.865f), new Vector2(0.67f, 0.975f));
+            AddText(logo, "CROSS THE BOARD", 38, TextPrimary, FontStyle.Bold, TextAnchor.MiddleCenter);
+
+            var subtitle = CreateRect("Logo Subtitle", _canvas.transform, new Vector2(0.38f, 0.825f), new Vector2(0.62f, 0.87f));
+            AddText(subtitle, "모든 선택이 길을 만든다", 15, TextSecondary, FontStyle.Normal, TextAnchor.MiddleCenter);
         }
 
-        private void BuildHeader()
+        private void CreateSettingsButton()
         {
-            var header = Rect("Header", _canvas.transform, new Vector2(0.045f, 0.875f), new Vector2(0.955f, 0.965f));
+            var settings = CreateRect("Settings Button", _canvas.transform, new Vector2(0.91f, 0.885f), new Vector2(0.965f, 0.975f));
+            var button = AddButton(settings, Surface, OpenSettings);
+            button.colors = Colors(Surface, SurfaceHover);
+            AddButtonLabel(settings, "⚙", 34, TextPrimary);
 
-            var mark = Rect("Logo mark", header, new Vector2(0f, 0.16f), new Vector2(0.047f, 0.84f));
-            Image(mark, Lime, true);
-            Text(mark, "CB", 22, Ink, FontStyle.Bold, TextAnchor.MiddleCenter);
-
-            var brand = Rect("Brand", header, new Vector2(0.058f, 0f), new Vector2(0.28f, 1f));
-            Text(brand, "CROSS THE BOARD", 24, Cream, FontStyle.Bold, TextAnchor.MiddleLeft, 2f);
-
-            var version = Rect("Version", header, new Vector2(0.255f, 0f), new Vector2(0.41f, 1f));
-            Text(version, "SEASON 01  /  DAY 12", 14, Muted, FontStyle.Normal, TextAnchor.MiddleLeft, 1.5f);
-
-            var currency = Rect("Currency", header, new Vector2(0.755f, 0.18f), new Vector2(0.845f, 0.82f));
-            Image(currency, new Color(1f, 1f, 1f, 0.055f), true);
-            Text(currency, "◆  1,240", 16, Cream, FontStyle.Bold, TextAnchor.MiddleCenter);
-
-            var profile = Rect("Profile", header, new Vector2(0.858f, 0.08f), Vector2.one);
-            var avatar = Rect("Avatar", profile, new Vector2(0f, 0.08f), new Vector2(0.28f, 0.92f));
-            Image(avatar, Sky, true);
-            Text(avatar, "P1", 17, Ink, FontStyle.Bold, TextAnchor.MiddleCenter);
-            var player = Rect("Player", profile, new Vector2(0.34f, 0f), Vector2.one);
-            Text(player, "PLAYER 01\n<size=13><color=#91A0AF>LEVEL 08</color></size>", 17, Cream, FontStyle.Bold, TextAnchor.MiddleLeft);
+            var tooltip = CreateRect("Settings Label", _canvas.transform, new Vector2(0.88f, 0.85f), new Vector2(0.995f, 0.885f));
+            AddText(tooltip, "설정", 13, TextSecondary, FontStyle.Normal, TextAnchor.MiddleCenter);
         }
 
-        private void BuildHero()
+        private void CreateContent()
         {
-            var hero = Rect("Hero", _canvas.transform, new Vector2(0.055f, 0.16f), new Vector2(0.575f, 0.84f));
-
-            var eyebrow = Rect("Eyebrow", hero, new Vector2(0f, 0.84f), new Vector2(1f, 0.93f));
-            Text(eyebrow, "YOUR NEXT MOVE STARTS HERE", 15, Lime, FontStyle.Bold, TextAnchor.MiddleLeft, 3f);
-
-            var title = Rect("Title", hero, new Vector2(-0.005f, 0.47f), new Vector2(1f, 0.86f));
-            Text(title, "CROSS\nTHE BOARD", 86, Cream, FontStyle.Bold, TextAnchor.MiddleLeft, -2f);
-
-            var description = Rect("Description", hero, new Vector2(0f, 0.36f), new Vector2(0.82f, 0.50f));
-            Text(description, "Choose your piece. Read the board.\nMake every move count.", 20, Muted, FontStyle.Normal, TextAnchor.MiddleLeft, 0.25f);
-
-            var start = Rect("Start button", hero, new Vector2(0f, 0.14f), new Vector2(0.52f, 0.31f));
-            Button(start, Lime, () => OpenSection(
-                "CHOOSE YOUR GAME",
-                "GAME MODE",
-                "Every board has a different rhythm. Pick the challenge that fits your next move.",
-                Lime,
-                new[] { "SOLO RUN", "LOCAL VERSUS", "DAILY CHALLENGE" }));
-            AddShadow(start.gameObject, new Color(0f, 0f, 0f, 0.35f), new Vector2(0, -7));
-
-            var startLabel = Rect("Label", start, new Vector2(0.08f, 0f), new Vector2(0.78f, 1f));
-            Text(startLabel, "START NEW GAME", 22, Ink, FontStyle.Bold, TextAnchor.MiddleLeft, 1f);
-            var arrow = Rect("Arrow", start, new Vector2(0.80f, 0f), new Vector2(0.94f, 1f));
-            Text(arrow, "→", 35, Ink, FontStyle.Normal, TextAnchor.MiddleRight);
-            start.gameObject.AddComponent<ButtonPulse>();
-
-            var continueCard = Rect("Continue", hero, new Vector2(0f, 0f), new Vector2(0.72f, 0.105f));
-            var continueButton = Button(continueCard, new Color(1f, 1f, 1f, 0.045f), () => OpenSection(
-                "CONTINUE JOURNEY", "LAST SESSION", "Your last run is ready when you are.", Sky,
-                new[] { "BOARD 04  ·  TURN 17", "RESUME" }));
-            continueButton.colors = ButtonColors(new Color(1f, 1f, 1f, 0.045f), new Color(1f, 1f, 1f, 0.1f));
-            var continueText = Rect("Continue text", continueCard, new Vector2(0.045f, 0f), new Vector2(0.96f, 1f));
-            Text(continueText, "CONTINUE  ·  BOARD 04     <color=#91A0AF>12m ago</color>", 15, Cream, FontStyle.Bold, TextAnchor.MiddleLeft);
+            _content = CreateRect("Content", _canvas.transform, new Vector2(0.08f, 0.19f), new Vector2(0.92f, 0.79f));
         }
 
-        private void BuildNavigation()
+        private void CreateBottomNavigation()
         {
-            var nav = Rect("Navigation", _canvas.transform, new Vector2(0.625f, 0.16f), new Vector2(0.945f, 0.84f));
-            var heading = Rect("Heading", nav, new Vector2(0f, 0.91f), Vector2.one);
-            _sectionLabel = Text(heading, "MAIN MENU", 14, Muted, FontStyle.Bold, TextAnchor.MiddleLeft, 3f);
+            var navigation = CreateRect("Bottom Navigation", _canvas.transform, new Vector2(0.17f, 0.035f), new Vector2(0.83f, 0.15f));
+            AddImage(navigation, new Color(Surface.r, Surface.g, Surface.b, 0.98f), true);
+            AddShadow(navigation.gameObject, new Color(0f, 0f, 0f, 0.38f), new Vector2(0f, -7f));
 
-            AddMenuCard(nav, 0, "01", "GAME MODE", "Solo, versus & daily boards", Lime, () => OpenSection(
-                "CHOOSE YOUR GAME", "GAME MODE", "Every board has a different rhythm. Pick the challenge that fits your next move.",
-                Lime, new[] { "SOLO RUN", "LOCAL VERSUS", "DAILY CHALLENGE" }));
-            AddMenuCard(nav, 1, "02", "CHARACTERS", "Find your perfect play style", Sky, () => OpenSection(
-                "CHOOSE YOUR PIECE", "CHARACTERS", "Different pieces bring different routes, perks, and ways to control the board.",
-                Sky, new[] { "THE SCOUT", "THE MAKER", "THE ROGUE", "LOCKED PIECE" }));
-            AddMenuCard(nav, 2, "03", "ACHIEVEMENTS", "Records, badges & rankings", Coral, () => OpenSection(
-                "MAKE YOUR MARK", "ACHIEVEMENTS & RANKING", "Track milestones, compare scores, and see how far you have crossed.",
-                Coral, new[] { "ACHIEVEMENTS  18/48", "GLOBAL RANK  #1,284", "FRIENDS LEADERBOARD" }));
-            AddMenuCard(nav, 3, "04", "SHOP", "Cosmetics, pieces & offers", Violet, () => OpenSection(
-                "THE CORNER SHOP", "SHOP", "Make the board yours with new pieces, trails, themes, and victory poses.",
-                Violet, new[] { "FEATURED", "BOARD THEMES", "PIECE STYLES" }));
-            AddMenuCard(nav, 4, "05", "SETTINGS", "Audio, controls & display", Muted, () => OpenSection(
-                "SET YOUR TABLE", "SETTINGS", "Tune the game to feel right before your next move.",
-                Muted, new[] { "AUDIO", "CONTROLS", "DISPLAY" }));
+            AddNavigationItem(navigation, MenuSection.Home, "⌂", "홈", 0);
+            AddNavigationItem(navigation, MenuSection.Shop, "◆", "상점", 1);
+            AddNavigationItem(navigation, MenuSection.Challenge, "★", "챌린지 모드", 2);
+            AddNavigationItem(navigation, MenuSection.Achievements, "♛", "업적", 3);
         }
 
-        private void AddMenuCard(RectTransform parent, int index, string number, string title, string subtitle, Color accent, UnityEngine.Events.UnityAction action)
+        private void AddNavigationItem(RectTransform parent, MenuSection section, string icon, string label, int index)
         {
-            const float height = 0.155f;
-            const float gap = 0.021f;
-            float top = 0.87f - index * (height + gap);
-            var card = Rect(title, parent, new Vector2(0f, top - height), new Vector2(1f, top));
-            var button = Button(card, new Color(1f, 1f, 1f, 0.055f), action);
-            button.colors = ButtonColors(new Color(1f, 1f, 1f, 0.055f), new Color(accent.r, accent.g, accent.b, 0.17f));
+            const float padding = 0.012f;
+            float width = (1f - padding * 5f) / 4f;
+            float left = padding + index * (width + padding);
+            var item = CreateRect(label, parent, new Vector2(left, 0.12f), new Vector2(left + width, 0.88f));
+            var button = AddButton(item, new Color(0f, 0f, 0f, 0f), () => SelectSection(section));
+            button.colors = Colors(new Color(0f, 0f, 0f, 0f), new Color(1f, 1f, 1f, 0.07f));
 
-            var bar = Rect("Accent", card, new Vector2(0f, 0f), new Vector2(0.012f, 1f));
-            Image(bar, accent, true);
+            var iconRect = CreateRect("Icon", item, new Vector2(0f, 0.43f), new Vector2(1f, 0.96f));
+            var iconText = AddText(iconRect, icon, 27, TextSecondary, FontStyle.Bold, TextAnchor.MiddleCenter);
+            var labelRect = CreateRect("Label", item, new Vector2(0f, 0.03f), new Vector2(1f, 0.48f));
+            var labelText = AddText(labelRect, label, label.Length > 5 ? 14 : 16, TextSecondary, FontStyle.Bold, TextAnchor.MiddleCenter);
+            var indicator = CreateRect("Selected", item, new Vector2(0.31f, -0.02f), new Vector2(0.69f, 0.025f));
+            AddImage(indicator, Accent, true);
 
-            var indexRect = Rect("Index", card, new Vector2(0.055f, 0f), new Vector2(0.16f, 1f));
-            Text(indexRect, number, 14, accent, FontStyle.Bold, TextAnchor.MiddleLeft, 1.5f);
-
-            var copy = Rect("Copy", card, new Vector2(0.18f, 0.13f), new Vector2(0.84f, 0.87f));
-            Text(copy, $"{title}\n<size=13><color=#91A0AF>{subtitle}</color></size>", 19, Cream, FontStyle.Bold, TextAnchor.MiddleLeft, 0.4f);
-
-            var arrow = Rect("Arrow", card, new Vector2(0.87f, 0f), new Vector2(0.95f, 1f));
-            Text(arrow, "›", 32, Muted, FontStyle.Normal, TextAnchor.MiddleRight);
-
-            var menuCard = card.gameObject.AddComponent<MenuCard>();
-            menuCard.accent = bar.GetComponent<Image>();
-            menuCard.arrow = arrow.GetComponent<Text>();
-            menuCard.target = card.GetComponent<Image>();
-            menuCard.accentColor = accent;
-            _menuCards.Add(menuCard);
+            _navigationItems.Add(new NavigationItem(section, item.GetComponent<Image>(), iconText, labelText, indicator.gameObject));
         }
 
-        private void BuildFooter()
+        private void SelectSection(MenuSection section)
         {
-            var footer = Rect("Footer", _canvas.transform, new Vector2(0.055f, 0.045f), new Vector2(0.945f, 0.105f));
-            var hint = Rect("Hint", footer, new Vector2(0f, 0f), new Vector2(0.5f, 1f));
-            Text(hint, "SELECT  ·  LEFT CLICK        BACK  ·  ESC", 13, new Color(Muted.r, Muted.g, Muted.b, 0.75f), FontStyle.Bold, TextAnchor.MiddleLeft, 1f);
-            var online = Rect("Online", footer, new Vector2(0.73f, 0f), Vector2.one);
-            Text(online, "●  ONLINE    BUILD 0.1.0", 13, new Color(Lime.r, Lime.g, Lime.b, 0.78f), FontStyle.Bold, TextAnchor.MiddleRight, 1f);
-        }
+            foreach (var child in new List<Transform>(GetChildren(_content)))
+                Destroy(child.gameObject);
 
-        private void BuildOverlay()
-        {
-            _overlay = Rect("Section overlay", _canvas.transform, Vector2.zero, Vector2.one);
-            Image(_overlay, new Color(0.02f, 0.03f, 0.045f, 0.82f));
-            _overlay.gameObject.SetActive(false);
-        }
+            foreach (var item in _navigationItems)
+                item.SetSelected(item.Section == section, Accent, TextSecondary);
 
-        private void OpenSection(string title, string kicker, string description, Color accent, string[] options)
-        {
-            if (_dialog != null)
-                Destroy(_dialog);
-
-            _overlay.gameObject.SetActive(true);
-            _overlay.SetAsLastSibling();
-
-            var closeArea = Button(_overlay, new Color(0f, 0f, 0f, 0f), CloseSection);
-            closeArea.transition = Selectable.Transition.None;
-
-            var dialog = Rect("Section dialog", _overlay, new Vector2(0.24f, 0.18f), new Vector2(0.76f, 0.82f));
-            _dialog = dialog.gameObject;
-            Image(dialog, Panel, true);
-            AddShadow(dialog.gameObject, new Color(0f, 0f, 0f, 0.55f), new Vector2(0f, -12f));
-            dialog.gameObject.AddComponent<DialogEntrance>();
-
-            var stripe = Rect("Stripe", dialog, new Vector2(0f, 0f), new Vector2(0.015f, 1f));
-            Image(stripe, accent, true);
-
-            var kickerRect = Rect("Kicker", dialog, new Vector2(0.09f, 0.80f), new Vector2(0.82f, 0.9f));
-            Text(kickerRect, kicker, 14, accent, FontStyle.Bold, TextAnchor.MiddleLeft, 3f);
-            var titleRect = Rect("Title", dialog, new Vector2(0.09f, 0.65f), new Vector2(0.85f, 0.82f));
-            Text(titleRect, title, 35, Cream, FontStyle.Bold, TextAnchor.MiddleLeft, -0.5f);
-            var descriptionRect = Rect("Description", dialog, new Vector2(0.09f, 0.50f), new Vector2(0.87f, 0.67f));
-            Text(descriptionRect, description, 17, Muted, FontStyle.Normal, TextAnchor.UpperLeft, 0.2f);
-
-            int count = Mathf.Max(1, options.Length);
-            float available = 0.34f;
-            float gap = 0.018f;
-            float optionHeight = (available - gap * (count - 1)) / count;
-            for (int i = 0; i < options.Length; i++)
+            switch (section)
             {
-                float top = 0.43f - i * (optionHeight + gap);
-                var option = Rect(options[i], dialog, new Vector2(0.09f, top - optionHeight), new Vector2(0.91f, top));
-                var optionButton = Button(option, PanelBright, () => { });
-                optionButton.colors = ButtonColors(PanelBright, new Color(accent.r, accent.g, accent.b, 0.25f));
-                var optionText = Rect("Label", option, new Vector2(0.05f, 0f), new Vector2(0.82f, 1f));
-                Text(optionText, options[i], 16, Cream, FontStyle.Bold, TextAnchor.MiddleLeft, 1f);
-                var optionArrow = Rect("Arrow", option, new Vector2(0.84f, 0f), new Vector2(0.95f, 1f));
-                Text(optionArrow, "→", 22, accent, FontStyle.Normal, TextAnchor.MiddleRight);
+                case MenuSection.Home:
+                    BuildSection("다시 오신 것을 환영합니다", "게임을 시작하고 보드 위의 새로운 길을 만들어 보세요.", "게임 시작", Accent);
+                    break;
+                case MenuSection.Shop:
+                    BuildSection("상점", "새로운 말, 보드 테마와 꾸미기 아이템을 만나보세요.", "상품 둘러보기", Hex("A98BFF"));
+                    break;
+                case MenuSection.Challenge:
+                    BuildSection("챌린지 모드", "특별한 규칙과 목표가 있는 스테이지에 도전하세요.", "챌린지 시작", Hex("58D5F7"));
+                    break;
+                case MenuSection.Achievements:
+                    BuildSection("업적", "플레이 기록과 달성한 업적을 한눈에 확인하세요.", "업적 확인", Hex("FF9A74"));
+                    break;
             }
-
-            var close = Rect("Close", dialog, new Vector2(0.87f, 0.86f), new Vector2(0.95f, 0.94f));
-            Button(close, new Color(1f, 1f, 1f, 0.065f), CloseSection);
-            Text(close, "×", 28, Cream, FontStyle.Normal, TextAnchor.MiddleCenter);
         }
 
-        private void CloseSection()
+        private void BuildSection(string title, string description, string action, Color accent)
         {
-            if (_dialog != null)
-                Destroy(_dialog);
-            _dialog = null;
-            _overlay.gameObject.SetActive(false);
+            var card = CreateRect("Section Card", _content, new Vector2(0.12f, 0.12f), new Vector2(0.88f, 0.9f));
+            AddImage(card, new Color(Surface.r, Surface.g, Surface.b, 0.92f), true);
+            AddShadow(card.gameObject, new Color(0f, 0f, 0f, 0.25f), new Vector2(0f, -8f));
+
+            var marker = CreateRect("Marker", card, new Vector2(0.08f, 0.76f), new Vector2(0.095f, 0.88f));
+            AddImage(marker, accent, true);
+            var heading = CreateRect("Heading", card, new Vector2(0.12f, 0.62f), new Vector2(0.9f, 0.9f));
+            AddText(heading, title, 42, TextPrimary, FontStyle.Bold, TextAnchor.MiddleLeft);
+            var body = CreateRect("Description", card, new Vector2(0.12f, 0.4f), new Vector2(0.88f, 0.63f));
+            AddText(body, description, 20, TextSecondary, FontStyle.Normal, TextAnchor.UpperLeft);
+            var actionButton = CreateRect("Primary Action", card, new Vector2(0.12f, 0.14f), new Vector2(0.53f, 0.34f));
+            AddButton(actionButton, accent, () => Debug.Log($"{action} selected"));
+            AddButtonLabel(actionButton, action + "  ›", 20, Background, FontStyle.Bold);
         }
 
-        private RectTransform Rect(string name, Transform parent, Vector2 min, Vector2 max, Vector2? size = null)
+        private void CreateModalLayer()
         {
-            var go = new GameObject(name, typeof(RectTransform));
-            var rect = go.GetComponent<RectTransform>();
+            _modalLayer = CreateRect("Modal Layer", _canvas.transform, Vector2.zero, Vector2.one);
+            AddImage(_modalLayer, new Color(0f, 0f, 0f, 0.7f));
+            _modalLayer.gameObject.SetActive(false);
+        }
+
+        private void OpenSettings()
+        {
+            if (_modalLayer == null)
+                CreateModalLayer();
+
+            _modalLayer.gameObject.SetActive(true);
+            _modalLayer.SetAsLastSibling();
+            foreach (var child in new List<Transform>(GetChildren(_modalLayer)))
+                Destroy(child.gameObject);
+
+            var dismiss = _modalLayer.GetComponent<Button>() ?? _modalLayer.gameObject.AddComponent<Button>();
+            dismiss.targetGraphic = _modalLayer.GetComponent<Image>();
+            dismiss.transition = Selectable.Transition.None;
+            dismiss.onClick.RemoveAllListeners();
+            dismiss.onClick.AddListener(CloseModal);
+
+            var panel = CreateRect("Settings Panel", _modalLayer, new Vector2(0.31f, 0.2f), new Vector2(0.69f, 0.8f));
+            AddImage(panel, Surface, true);
+            panel.gameObject.AddComponent<ModalClickBlocker>();
+            var title = CreateRect("Title", panel, new Vector2(0.1f, 0.76f), new Vector2(0.72f, 0.91f));
+            AddText(title, "설정", 32, TextPrimary, FontStyle.Bold, TextAnchor.MiddleLeft);
+            var close = CreateRect("Close", panel, new Vector2(0.82f, 0.8f), new Vector2(0.93f, 0.92f));
+            AddButton(close, SurfaceHover, CloseModal);
+            AddButtonLabel(close, "×", 28, TextPrimary);
+
+            AddSettingRow(panel, "사운드", "켜짐", 0.62f);
+            AddSettingRow(panel, "진동", "켜짐", 0.46f);
+            AddSettingRow(panel, "언어", "한국어", 0.30f);
+        }
+
+        private void AddSettingRow(RectTransform panel, string label, string value, float y)
+        {
+            var row = CreateRect(label, panel, new Vector2(0.1f, y), new Vector2(0.9f, y + 0.12f));
+            AddImage(row, SurfaceHover, true);
+            var name = CreateRect("Name", row, new Vector2(0.05f, 0f), new Vector2(0.55f, 1f));
+            AddText(name, label, 17, TextPrimary, FontStyle.Bold, TextAnchor.MiddleLeft);
+            var current = CreateRect("Value", row, new Vector2(0.55f, 0f), new Vector2(0.94f, 1f));
+            AddText(current, value, 16, Accent, FontStyle.Bold, TextAnchor.MiddleRight);
+        }
+
+        private void CloseModal() => _modalLayer.gameObject.SetActive(false);
+
+        private RectTransform CreateRect(string name, Transform parent, Vector2 min, Vector2 max)
+        {
+            var gameObject = new GameObject(name, typeof(RectTransform));
+            var rect = gameObject.GetComponent<RectTransform>();
             rect.SetParent(parent, false);
             rect.anchorMin = min;
             rect.anchorMax = max;
             rect.offsetMin = Vector2.zero;
             rect.offsetMax = Vector2.zero;
-            if (size.HasValue)
-                rect.sizeDelta = size.Value;
             return rect;
         }
 
-        private Image Image(RectTransform target, Color color, bool rounded = false)
+        private Image AddImage(RectTransform rect, Color color, bool rounded = false)
         {
-            var image = target.gameObject.GetComponent<Image>() ?? target.gameObject.AddComponent<Image>();
+            var image = rect.GetComponent<Image>() ?? rect.gameObject.AddComponent<Image>();
             image.color = color;
             if (rounded)
             {
                 image.sprite = _roundedSprite;
-                image.type = UnityEngine.UI.Image.Type.Sliced;
+                image.type = Image.Type.Sliced;
             }
             return image;
         }
 
-        private Text Text(RectTransform target, string value, int size, Color color, FontStyle style, TextAnchor alignment, float spacing = 0f)
+        private Text AddText(RectTransform rect, string value, int size, Color color, FontStyle style, TextAnchor alignment)
         {
-            var text = target.gameObject.GetComponent<Text>() ?? target.gameObject.AddComponent<Text>();
+            var text = rect.GetComponent<Text>() ?? rect.gameObject.AddComponent<Text>();
+            if (text == null)
+                throw new InvalidOperationException($"Text cannot be added directly to '{rect.name}'. Create a child label instead.");
             text.font = _font;
             text.text = value;
             text.fontSize = size;
@@ -343,54 +270,66 @@ namespace CrossTheBoard.UI
             text.fontStyle = style;
             text.alignment = alignment;
             text.supportRichText = true;
-            text.resizeTextForBestFit = false;
             text.horizontalOverflow = HorizontalWrapMode.Wrap;
             text.verticalOverflow = VerticalWrapMode.Overflow;
             text.raycastTarget = false;
-            if (Mathf.Abs(spacing) > 0.01f)
-                target.gameObject.AddComponent<LetterSpacing>().spacing = spacing;
             return text;
         }
 
-        private Button Button(RectTransform target, Color normal, UnityEngine.Events.UnityAction action)
+        private Text AddButtonLabel(
+            RectTransform button,
+            string value,
+            int size,
+            Color color,
+            FontStyle style = FontStyle.Normal)
         {
-            // Selectable applies its state color through the CanvasRenderer, so the source
-            // graphic stays white to avoid multiplying translucent card colors twice.
-            var image = Image(target, Color.white, true);
-            image.raycastTarget = true;
-            var button = target.gameObject.GetComponent<Button>() ?? target.gameObject.AddComponent<Button>();
+            var label = CreateRect("Label", button, Vector2.zero, Vector2.one);
+            label.offsetMin = new Vector2(8f, 4f);
+            label.offsetMax = new Vector2(-8f, -4f);
+            return AddText(label, value, size, color, style, TextAnchor.MiddleCenter);
+        }
+
+        private Button AddButton(RectTransform rect, Color normal, UnityEngine.Events.UnityAction action)
+        {
+            var image = AddImage(rect, Color.white, true);
+            var button = rect.GetComponent<Button>() ?? rect.gameObject.AddComponent<Button>();
             button.targetGraphic = image;
-            button.colors = ButtonColors(normal, new Color(normal.r * 1.18f, normal.g * 1.18f, normal.b * 1.18f, Mathf.Max(normal.a, 0.14f)));
+            button.colors = Colors(normal, Brighten(normal));
             button.onClick.AddListener(action);
             return button;
         }
 
-        private static ColorBlock ButtonColors(Color normal, Color highlighted)
+        private static IEnumerable<Transform> GetChildren(Transform parent)
         {
-            return new ColorBlock
-            {
-                normalColor = normal,
-                highlightedColor = highlighted,
-                pressedColor = new Color(highlighted.r * 0.85f, highlighted.g * 0.85f, highlighted.b * 0.85f, highlighted.a),
-                selectedColor = highlighted,
-                disabledColor = new Color(normal.r, normal.g, normal.b, normal.a * 0.4f),
-                colorMultiplier = 1f,
-                fadeDuration = 0.11f
-            };
+            for (int i = 0; i < parent.childCount; i++)
+                yield return parent.GetChild(i);
         }
+
+        private static ColorBlock Colors(Color normal, Color highlighted) => new()
+        {
+            normalColor = normal,
+            highlightedColor = highlighted,
+            pressedColor = new Color(highlighted.r * 0.82f, highlighted.g * 0.82f, highlighted.b * 0.82f, highlighted.a),
+            selectedColor = highlighted,
+            disabledColor = new Color(normal.r, normal.g, normal.b, normal.a * 0.4f),
+            colorMultiplier = 1f,
+            fadeDuration = 0.1f
+        };
+
+        private static Color Brighten(Color color) =>
+            new(Mathf.Min(1f, color.r * 1.14f), Mathf.Min(1f, color.g * 1.14f), Mathf.Min(1f, color.b * 1.14f), Mathf.Max(color.a, 0.12f));
 
         private static void AddShadow(GameObject target, Color color, Vector2 distance)
         {
             var shadow = target.AddComponent<Shadow>();
             shadow.effectColor = color;
             shadow.effectDistance = distance;
-            shadow.useGraphicAlpha = true;
         }
 
         private static Sprite CreateRoundedSprite()
         {
             const int size = 64;
-            const float radius = 13f;
+            const float radius = 14f;
             var texture = new Texture2D(size, size, TextureFormat.RGBA32, false)
             {
                 name = "Runtime Rounded Rectangle",
@@ -398,23 +337,19 @@ namespace CrossTheBoard.UI
                 wrapMode = TextureWrapMode.Clamp,
                 hideFlags = HideFlags.HideAndDontSave
             };
-
             var pixels = new Color32[size * size];
             for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
             {
-                for (int x = 0; x < size; x++)
-                {
-                    float dx = Mathf.Max(radius - x, 0f, x - (size - 1 - radius));
-                    float dy = Mathf.Max(radius - y, 0f, y - (size - 1 - radius));
-                    float alpha = Mathf.Clamp01(radius + 0.5f - Mathf.Sqrt(dx * dx + dy * dy));
-                    pixels[y * size + x] = new Color(1f, 1f, 1f, alpha);
-                }
+                float dx = Mathf.Max(radius - x, 0f, x - (size - 1f - radius));
+                float dy = Mathf.Max(radius - y, 0f, y - (size - 1f - radius));
+                float alpha = Mathf.Clamp01(radius + 0.5f - Mathf.Sqrt(dx * dx + dy * dy));
+                pixels[y * size + x] = new Color(1f, 1f, 1f, alpha);
             }
-
             texture.SetPixels32(pixels);
             texture.Apply();
-            var sprite = Sprite.Create(texture, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 100f, 0, SpriteMeshType.FullRect, new Vector4(16, 16, 16, 16));
-            sprite.name = "Runtime Rounded Rectangle";
+            var sprite = Sprite.Create(texture, new Rect(0f, 0f, size, size), Vector2.one * 0.5f, 100f, 0,
+                SpriteMeshType.FullRect, new Vector4(16f, 16f, 16f, 16f));
             sprite.hideFlags = HideFlags.HideAndDontSave;
             return sprite;
         }
@@ -424,136 +359,38 @@ namespace CrossTheBoard.UI
             ColorUtility.TryParseHtmlString("#" + value, out var color);
             return color;
         }
-    }
 
-    public sealed class MenuCard : MonoBehaviour, IPointerEnterHandler, IPointerExitHandler
-    {
-        public Image target;
-        public Image accent;
-        public Text arrow;
-        public Color accentColor;
-        private Vector3 _baseScale;
-        private bool _hovered;
+        private enum MenuSection { Home, Shop, Challenge, Achievements }
 
-        private void Awake() => _baseScale = transform.localScale;
-        public void OnPointerEnter(PointerEventData eventData) => _hovered = true;
-        public void OnPointerExit(PointerEventData eventData) => _hovered = false;
-
-        private void Update()
+        private sealed class NavigationItem
         {
-            transform.localScale = Vector3.Lerp(transform.localScale, _hovered ? _baseScale * 1.018f : _baseScale, Time.unscaledDeltaTime * 12f);
-            if (arrow != null)
-                arrow.color = Color.Lerp(arrow.color, _hovered ? accentColor : new Color(0.57f, 0.63f, 0.69f), Time.unscaledDeltaTime * 12f);
-        }
-    }
+            public readonly MenuSection Section;
+            private readonly Image _background;
+            private readonly Text _icon;
+            private readonly Text _label;
+            private readonly GameObject _indicator;
 
-    public sealed class AmbientFloat : MonoBehaviour
-    {
-        public float amplitude = 8f;
-        public float speed = 0.4f;
-        public float phase;
-        private Vector2 _origin;
-
-        private void Start() => _origin = ((RectTransform)transform).anchoredPosition;
-        private void Update()
-        {
-            var rect = (RectTransform)transform;
-            rect.anchoredPosition = _origin + Vector2.up * (Mathf.Sin(Time.unscaledTime * speed + phase) * amplitude);
-        }
-    }
-
-    public sealed class ButtonPulse : MonoBehaviour
-    {
-        private float _phase;
-        private Vector3 _baseScale;
-
-        private void Awake() => _baseScale = transform.localScale;
-
-        private void Update()
-        {
-            _phase += Time.unscaledDeltaTime;
-            float pulse = Mathf.Lerp(1f, 1.006f, (Mathf.Sin(_phase * 2.2f) + 1f) * 0.5f);
-            transform.localScale = _baseScale * pulse;
-        }
-    }
-
-    public sealed class DialogEntrance : MonoBehaviour
-    {
-        private float _progress;
-        private RectTransform _rect;
-
-        private void Awake()
-        {
-            _rect = (RectTransform)transform;
-            _rect.localScale = Vector3.one * 0.94f;
-        }
-
-        private void Update()
-        {
-            _progress = Mathf.Min(1f, _progress + Time.unscaledDeltaTime * 7f);
-            float eased = 1f - Mathf.Pow(1f - _progress, 3f);
-            _rect.localScale = Vector3.one * Mathf.Lerp(0.94f, 1f, eased);
-            if (_progress >= 1f)
-                enabled = false;
-        }
-    }
-
-    /// <summary>Simple decorative route drawn behind the menu using the Canvas mesh.</summary>
-    public sealed class BoardRouteGraphic : MaskableGraphic
-    {
-        private static readonly Vector2[] Route =
-        {
-            new(0.02f, 0.22f), new(0.14f, 0.32f), new(0.20f, 0.66f), new(0.36f, 0.77f),
-            new(0.48f, 0.51f), new(0.62f, 0.40f), new(0.73f, 0.68f), new(0.92f, 0.82f)
-        };
-
-        protected override void OnPopulateMesh(VertexHelper vh)
-        {
-            vh.Clear();
-            var bounds = rectTransform.rect;
-            const float width = 3f;
-            for (int i = 0; i < Route.Length - 1; i++)
+            public NavigationItem(MenuSection section, Image background, Text icon, Text label, GameObject indicator)
             {
-                Vector2 a = new(bounds.xMin + Route[i].x * bounds.width, bounds.yMin + Route[i].y * bounds.height);
-                Vector2 b = new(bounds.xMin + Route[i + 1].x * bounds.width, bounds.yMin + Route[i + 1].y * bounds.height);
-                Vector2 normal = Vector2.Perpendicular((b - a).normalized) * width;
-                int index = vh.currentVertCount;
-                vh.AddVert(a - normal, color, Vector2.zero);
-                vh.AddVert(a + normal, color, Vector2.zero);
-                vh.AddVert(b + normal, color, Vector2.zero);
-                vh.AddVert(b - normal, color, Vector2.zero);
-                vh.AddTriangle(index, index + 1, index + 2);
-                vh.AddTriangle(index, index + 2, index + 3);
+                Section = section;
+                _background = background;
+                _icon = icon;
+                _label = label;
+                _indicator = indicator;
+            }
+
+            public void SetSelected(bool selected, Color accent, Color muted)
+            {
+                _background.color = selected ? new Color(1f, 1f, 1f, 0.07f) : Color.clear;
+                _icon.color = selected ? accent : muted;
+                _label.color = selected ? accent : muted;
+                _indicator.SetActive(selected);
             }
         }
     }
 
-    /// <summary>Adds subtle tracking to legacy UI Text without requiring imported TMP resources.</summary>
-    public sealed class LetterSpacing : BaseMeshEffect
+    public sealed class ModalClickBlocker : MonoBehaviour, IPointerClickHandler
     {
-        public float spacing;
-
-        public override void ModifyMesh(VertexHelper vh)
-        {
-            if (!IsActive() || Mathf.Abs(spacing) < 0.01f)
-                return;
-
-            var vertices = new List<UIVertex>();
-            vh.GetUIVertexStream(vertices);
-            int characterIndex = 0;
-            for (int i = 0; i + 5 < vertices.Count; i += 6)
-            {
-                float offset = characterIndex * spacing;
-                for (int j = 0; j < 6; j++)
-                {
-                    var vertex = vertices[i + j];
-                    vertex.position.x += offset;
-                    vertices[i + j] = vertex;
-                }
-                characterIndex++;
-            }
-            vh.Clear();
-            vh.AddUIVertexTriangleStream(vertices);
-        }
+        public void OnPointerClick(PointerEventData eventData) => eventData.Use();
     }
 }

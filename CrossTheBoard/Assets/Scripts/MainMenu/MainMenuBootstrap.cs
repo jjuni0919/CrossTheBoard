@@ -17,7 +17,7 @@ namespace CrossTheBoard.UI
         [SerializeField] private Text _achievementDetails;
         [SerializeField] private Text _settingsStatus;
         [SerializeField] private Button _startButton;
-        [SerializeField] private string _gameScene = "SampleScene";
+        [SerializeField] private string _gameScene = "GameplayScene";
         [SerializeField] private Color _selectedColor = new(0.788f, 0.961f, 0.361f);
         [SerializeField] private Color _normalColor = new(0.1f, 0.141f, 0.196f);
 

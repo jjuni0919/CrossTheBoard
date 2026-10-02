@@ -1723,7 +1723,7 @@ MonoBehaviour:
   _achievementDetails: {fileID: 1792636270}
   _settingsStatus: {fileID: 130884081}
   _startButton: {fileID: 1974179074}
-  _gameScene: SampleScene
+  _gameScene: GameplayScene
   _selectedColor: {r: 0.788, g: 0.961, b: 0.361, a: 1}
   _normalColor: {r: 0.1, g: 0.141, b: 0.196, a: 1}
 --- !u!4 &444894785

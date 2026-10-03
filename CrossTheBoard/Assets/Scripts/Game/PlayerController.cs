@@ -8,10 +8,12 @@ namespace CrossTheBoard
 {
     public sealed class PlayerController : MonoBehaviour
     {
-        [SerializeField] private Vector2Int _startPosition = new(1, 0);
+        public const int MaxBackwardSteps = 1;
+        [SerializeField] private Vector2Int _startPosition = new(0, 0);
         [SerializeField] private SpriteRenderer _appearance;
         [SerializeField, Range(0.01f, 0.25f)] private float _swipeThreshold = 0.04f;
         public Vector2Int Position { get; private set; }
+        public int FurthestRow { get; private set; }
         public event Action<Vector2Int, Vector2Int> Moved;
         private MapManager _map;
         private Vector2 _swipeStart;
@@ -28,7 +30,9 @@ namespace CrossTheBoard
                 throw new InvalidOperationException("The player start cell is outside the map or blocked.");
             _map = map;
             Position = _startPosition;
+            FurthestRow = Position.y;
             transform.position = _map.GetWorldPosition(Position);
+            LogPosition();
         }
 
         private void Update()
@@ -112,13 +116,24 @@ namespace CrossTheBoard
             if (_map == null || !isActiveAndEnabled || GameStateManager.Instance.State != GameState.Playing)
                 return false;
             Vector2Int destination = Position + direction;
+            if (destination.y < FurthestRow - MaxBackwardSteps)
+                return false;
             if (!_map.CanMoveTo(destination))
                 return false;
             Vector2Int previous = Position;
             Position = destination;
+            FurthestRow = Mathf.Max(FurthestRow, Position.y);
             transform.position = _map.GetWorldPosition(Position);
+            LogPosition();
             Moved?.Invoke(previous, Position);
             return true;
+        }
+
+        private void LogPosition()
+        {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            Debug.Log($"[Player] Position: ({Position.x}, {Position.y})", this);
+#endif
         }
 
         public void SetSkin(Sprite sprite)

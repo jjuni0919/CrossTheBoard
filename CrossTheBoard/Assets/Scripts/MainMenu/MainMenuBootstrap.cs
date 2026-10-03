@@ -23,6 +23,7 @@ namespace CrossTheBoard.UI
 
         private SoundManager _sound;
         private AchievementTracker _achievements;
+        private MainMenuCollectionView _collectionView;
 
         private void Start()
         {
@@ -35,6 +36,9 @@ namespace CrossTheBoard.UI
             _effectsSlider.onValueChanged.AddListener(SetEffectsVolume);
             GameStateManager.Instance.SetState(GameState.MainMenu);
             _settingsPanel.SetActive(false);
+            _collectionView = new MainMenuCollectionView(this, _sections, _navigation, _achievementSummary.font);
+            _sections = _collectionView.Sections;
+            _navigation = _collectionView.Navigation;
             SelectSection(0);
             RefreshAchievements();
         }
@@ -73,6 +77,7 @@ namespace CrossTheBoard.UI
             _bgmValue.text = $"{Mathf.RoundToInt(_sound.BgmVolume * 100f)}%";
             _effectsValue.text = $"{Mathf.RoundToInt(_sound.EffectsVolume * 100f)}%";
             _settingsStatus.text = string.Empty;
+            _settingsPanel.transform.SetAsLastSibling();
             _settingsPanel.SetActive(true);
         }
 
@@ -120,6 +125,7 @@ namespace CrossTheBoard.UI
 
         private void OnDestroy()
         {
+            _collectionView?.Dispose();
             if (_achievements != null)
                 _achievements.ProgressChanged -= RefreshAchievements;
             _bgmSlider.onValueChanged.RemoveListener(SetBgmVolume);

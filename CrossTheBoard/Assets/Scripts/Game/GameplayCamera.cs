@@ -32,7 +32,7 @@ namespace CrossTheBoard
                 float width = targetAspect / screenAspect;
                 _camera.rect = new Rect((1f - width) * 0.5f, 0f, width, 1f);
             }
-            Vector3 center = _map.GetWorldPosition(new Vector2Int(0, _player.Position.y));
+            Vector3 center = _map.GetWorldPosition(new Vector2Int(0, _player.FurthestRow));
             center.y += (MapManager.RowsAhead - MapManager.RowsBehind) * 0.5f;
             center.z = transform.position.z;
             transform.position = center;

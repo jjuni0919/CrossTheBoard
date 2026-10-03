@@ -5,7 +5,6 @@ using UnityEngine.InputSystem.UI;
 
 namespace CrossTheBoard
 {
-    /// <summary>Provides a route back to the menu so the collected wallet can be used in the shop.</summary>
     public sealed class GameplayHud : MonoBehaviour
     {
         private GameplayController _gameplay;

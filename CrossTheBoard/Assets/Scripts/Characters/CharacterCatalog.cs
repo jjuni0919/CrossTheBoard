@@ -33,23 +33,9 @@ namespace CrossTheBoard
         };
     }
 
-    public sealed class SkinDefinition
-    {
-        public string Id { get; }
-        public string CharacterId { get; }
-        public string Name { get; }
-        public int Price { get; }
-        public Color Color { get; }
-
-        public SkinDefinition(string id, string characterId, string name, int price, Color color)
-        { Id = id; CharacterId = characterId; Name = name; Price = price; Color = color; }
-    }
-
-    /// <summary>Stable IDs are shared by saves, shop entries, skins and gameplay appearances.</summary>
     public static class CharacterCatalog
     {
         public const string StarterId = "slime";
-        public const string DefaultSkinId = "default";
         private static readonly CharacterDefinition[] Definitions =
         {
             new(StarterId, "초록 슬라임", CharacterUnlockCondition.Default, 0, 0, new Color(0.50f, 0.86f, 0.37f), 0),
@@ -63,24 +49,10 @@ namespace CrossTheBoard
             new("pumpkin", "호박 마법사", CharacterUnlockCondition.TotalCoinsCollected, 100, 0, new Color(0.94f, 0.40f, 0.27f), 8),
             new("golem", "이끼 골렘", CharacterUnlockCondition.TotalForwardCells, 100, 0, new Color(0.53f, 0.68f, 0.51f), 9)
         };
-        private static readonly SkinDefinition[] SkinDefinitions =
-        {
-            new("slime_sun", StarterId, "햇살 슬라임", 25, new Color(1f, 0.73f, 0.25f)),
-            new("slime_moon", StarterId, "밤하늘 슬라임", 35, new Color(0.58f, 0.54f, 0.94f))
-        };
         public static IReadOnlyList<CharacterDefinition> Characters { get; } = Array.AsReadOnly(Definitions);
-        public static IReadOnlyList<SkinDefinition> Skins { get; } = Array.AsReadOnly(SkinDefinitions);
 
         public static CharacterDefinition Find(string id) => Array.Find(Definitions, character => character.Id == id);
-        public static SkinDefinition FindSkin(string id) => Array.Find(SkinDefinitions, skin => skin.Id == id);
         public static bool IsUnlocked(SaveData data, string id) => Find(id) != null && data.unlockedCharacterIds.Contains(id);
-        public static bool CanUseSkin(SaveData data, string characterId, string skinId)
-        {
-            if (skinId == DefaultSkinId)
-                return true;
-            var skin = FindSkin(skinId);
-            return skin != null && skin.CharacterId == characterId && data.unlockedSkinIds.Contains(skinId);
-        }
 
         public static void EvaluateUnlocks(SaveData data)
         {
@@ -112,43 +84,17 @@ namespace CrossTheBoard
             data.unlockedCharacterIds.Add(id);
         }
 
-        public static void PurchaseSkin(SaveData data, string id)
-        {
-            var skin = FindSkin(id);
-            if (skin == null || !IsUnlocked(data, skin.CharacterId))
-                throw new InvalidOperationException("해당 캐릭터를 먼저 해금해 주세요.");
-            if (data.unlockedSkinIds.Contains(id))
-                throw new InvalidOperationException("이미 보유한 스킨입니다.");
-            if (data.coins < skin.Price)
-                throw new InvalidOperationException("코인이 부족합니다.");
-            data.coins -= skin.Price;
-            data.unlockedSkinIds.Add(id);
-        }
-
         public static void SelectCharacter(SaveData data, string id)
         {
             if (!IsUnlocked(data, id))
                 throw new InvalidOperationException("해금되지 않은 캐릭터입니다.");
-            if (data.selectedCharacterId != id)
-                data.selectedSkinId = DefaultSkinId;
             data.selectedCharacterId = id;
         }
 
-        public static void SelectSkin(SaveData data, string skinId)
-        {
-            var skin = FindSkin(skinId);
-            if (skin == null || !IsUnlocked(data, skin.CharacterId) || !data.unlockedSkinIds.Contains(skinId))
-                throw new InvalidOperationException("해금되지 않은 스킨입니다.");
-            data.selectedCharacterId = skin.CharacterId;
-            data.selectedSkinId = skin.Id;
-        }
-
-        public static Sprite GetSprite(string characterId, string skinId = DefaultSkinId)
+        public static Sprite GetSprite(string characterId)
         {
             var character = Find(characterId) ?? Find(StarterId);
-            var skin = FindSkin(skinId);
-            Color color = skin != null && skin.CharacterId == character.Id ? skin.Color : character.Color;
-            return PlaceholderSprites.Character(character.Id + ":" + skinId, character.PortraitStyle, color);
+            return PlaceholderSprites.Character(character.Id, character.PortraitStyle, character.Color);
         }
     }
 }

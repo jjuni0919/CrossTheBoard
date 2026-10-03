@@ -23,6 +23,7 @@ public static class CollectionRegressionChecks
             var save = UnityEngine.Object.FindFirstObjectByType<SaveManager>();
             Singleton(typeof(SaveManager), save);
             CheckSave(save);
+            CheckAchievements(save);
             CheckGameplay(save);
             CheckMenu();
             Debug.Log("[CollectionRegressionChecks] PASS: migration, purchases, rollback, coin placement/collection, occupancy, row/cell events, unlocks, preview/confirmation, selected gameplay character and menu navigation.");
@@ -59,11 +60,8 @@ public static class CollectionRegressionChecks
         Require(data.coins == 50 && CharacterCatalog.IsUnlocked(data, "robot"), "Purchase debits exact price.");
         Reject(() => CharacterCatalog.PurchaseCharacter(data, "robot"));
         Require(data.coins == 50, "Duplicate purchase does not charge twice.");
-        CharacterCatalog.PurchaseSkin(data, "slime_sun");
-        CharacterCatalog.SelectSkin(data, "slime_sun");
-        Require(data.coins == 25 && data.selectedSkinId == "slime_sun", "Skin purchase and equip.");
         CharacterCatalog.SelectCharacter(data, "robot");
-        Require(data.selectedSkinId == CharacterCatalog.DefaultSkinId, "Changing characters resets incompatible skin.");
+        Require(data.selectedCharacterId == "robot" && data.coins == 50, "Selecting a character does not spend currency.");
     }
 
     private static void CheckSave(SaveManager save)
@@ -73,9 +71,18 @@ public static class CollectionRegressionChecks
         object[] args = { legacy, null };
         bool loaded = (bool)typeof(SaveManager).GetMethod("TryRead", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(save, args);
         var migrated = (SaveData)args[1];
-        Require(loaded && migrated.version == 2 && migrated.coins == 17 && migrated.bgmVolume == 0.4f && migrated.unlockedCharacterIds.Count == 1,
+        Require(loaded && migrated.version == SaveData.CurrentVersion && migrated.coins == 17 && migrated.bgmVolume == 0.4f && migrated.unlockedCharacterIds.Count == 1,
             "Version 1 wallet/audio migrate without granting extra characters.");
         File.Delete(legacy);
+        string previous = Path.Combine(Application.temporaryCachePath, "collection-v2.json");
+        File.WriteAllText(previous, "{\"version\":2,\"coins\":75,\"achievements\":[],\"selectedCharacterId\":\"robot\",\"unlockedCharacterIds\":[\"slime\",\"robot\"],\"selectedSkinId\":\"slime_sun\",\"unlockedSkinIds\":[\"slime_sun\"]}");
+        args = new object[] { previous, null };
+        loaded = (bool)typeof(SaveManager).GetMethod("TryRead", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(save, args);
+        migrated = (SaveData)args[1];
+        Require(loaded && migrated.version == SaveData.CurrentVersion && migrated.coins == 75 && migrated.selectedCharacterId == "robot" &&
+            CharacterCatalog.IsUnlocked(migrated, "robot") && !JsonUtility.ToJson(migrated).Contains("Skin"),
+            "Version 2 ignores removed skin fields while preserving wallet and characters.");
+        File.Delete(previous);
         Property(save, "Data", new SaveData { coins = 80 });
         int events = 0;
         save.DataChanged += () => events++;
@@ -97,6 +104,113 @@ public static class CollectionRegressionChecks
         Require(!save.TryUpdate(data => data.coins += 10) && save.Data.coins == 30, "Disabled saves cannot mutate wallet.");
         Property(save, "CanSave", true);
         Require(save.Load() && save.Data.coins == 30 && CharacterCatalog.IsUnlocked(save.Data, "robot"), "Wallet and ownership survive reload.");
+        before = save.Data;
+        Action<SaveData>[] invalidUpdates =
+        {
+            data => data.bgmVolume = float.NaN,
+            data => data.achievements = null,
+            data => data.unlockedCharacterIds = null,
+            data => data.coins = -1,
+            data => data.achievements.AddRange(new[]
+            {
+                new AchievementProgress { id = "duplicate" },
+                new AchievementProgress { id = "duplicate" }
+            })
+        };
+        foreach (var update in invalidUpdates)
+        {
+            bool rejected = false;
+            try { save.TryUpdate(update); }
+            catch (InvalidDataException) { rejected = true; }
+            Require(rejected && ReferenceEquals(before, save.Data) && events == 1, "Invalid candidates never replace or persist the original save.");
+        }
+        bool nestedUpdateRan = false;
+        bool nestedCallsRejected = false;
+        Action nestedListener = () =>
+        {
+            nestedCallsRejected = !save.Save() && !save.Load() && !save.TryUpdate(data => nestedUpdateRan = true);
+        };
+        save.DataChanged += nestedListener;
+        try
+        {
+            Require(save.TryUpdate(data => data.coins++) && nestedCallsRejected && !nestedUpdateRan && save.Data.coins == 31,
+                "Nested persistence leaves the outer transaction intact.");
+        }
+        finally { save.DataChanged -= nestedListener; }
+        int healthyListenerCalls = 0;
+        Action brokenListener = () => throw new InvalidOperationException("Expected regression listener failure.");
+        Action healthyListener = () => healthyListenerCalls++;
+        save.DataChanged += brokenListener;
+        save.DataChanged += healthyListener;
+        try
+        {
+            Require(save.TryUpdate(data => data.coins++) && healthyListenerCalls == 1 && save.Data.coins == 32,
+                "A logged listener failure cannot roll back a disk commit or suppress later listeners.");
+        }
+        finally
+        {
+            save.DataChanged -= brokenListener;
+            save.DataChanged -= healthyListener;
+        }
+        Require(save.TryUpdate(data => data.coins = 30) && save.Load() && save.Data.coins == 30,
+            "Persistence guards are released after callback failure.");
+        Require(save.TryUpdate(data =>
+        {
+            nestedCallsRejected = !save.Save() && !save.Load() && !save.TryUpdate(nested => nestedUpdateRan = true);
+        }) && nestedCallsRejected && !nestedUpdateRan && save.Data.coins == 30,
+            "Candidate update callbacks cannot reenter persistence either.");
+    }
+
+    private static void CheckAchievements(SaveManager save)
+    {
+        var tracker = UnityEngine.Object.FindFirstObjectByType<AchievementTracker>();
+        var original = tracker.Database;
+        var database = ScriptableObject.CreateInstance<AchievementDatabase>();
+        Set(database, "_achievements", new[] { new AchievementDefinition { id = "regression", goal = "Regression", target = 2, reward = 7 } });
+        database.Validate();
+        Set(tracker, "_database", database);
+        int progressEvents = 0;
+        Action listener = () => progressEvents++;
+        tracker.ProgressChanged += listener;
+        string blockedPath = save.SavePath + ".tmp";
+        try
+        {
+            var before = save.Data;
+            Require(!File.Exists(blockedPath) && !Directory.Exists(blockedPath), "Achievement test temporary path must be unused.");
+            Directory.CreateDirectory(blockedPath);
+            try
+            {
+                Require(!tracker.AddProgress("regression") && ReferenceEquals(before, save.Data) && progressEvents == 0,
+                    "Achievement write failure preserves the entire original save and publishes no progress.");
+            }
+            finally { Directory.Delete(blockedPath); }
+            int coins = save.Data.coins;
+            Require(tracker.AddProgress("regression") && tracker.GetProgress("regression") == 1 && save.Data.coins == coins,
+                "Partial achievement progress persists without rewarding coins.");
+            Require(tracker.AddProgress("regression", int.MaxValue) && tracker.IsAchieved("regression") &&
+                tracker.GetProgress("regression") == 2 && save.Data.coins == coins + 7 && progressEvents == 2,
+                "Achievement completion caps progress and grants its reward once.");
+            Require(tracker.AddProgress("regression") && save.Data.coins == coins + 7 && progressEvents == 2,
+                "Completed achievements do not save or reward again.");
+            Require(save.TryUpdate(data =>
+            {
+                data.coins = int.MaxValue;
+                data.achievements.Clear();
+            }), "Prepare reward overflow boundary.");
+            before = save.Data;
+            bool rejected = false;
+            try { tracker.AddProgress("regression", 2); }
+            catch (OverflowException) { rejected = true; }
+            Require(rejected && ReferenceEquals(before, save.Data) && save.Data.achievements.Count == 0 && progressEvents == 2,
+                "Reward overflow cannot partially complete an achievement.");
+            Require(save.TryUpdate(data => data.coins = coins), "Restore wallet after boundary checks.");
+        }
+        finally
+        {
+            tracker.ProgressChanged -= listener;
+            Set(tracker, "_database", original);
+            UnityEngine.Object.DestroyImmediate(database);
+        }
     }
 
     private static void CheckGameplay(SaveManager save)
@@ -107,12 +221,12 @@ public static class CollectionRegressionChecks
         Singleton(typeof(GameStateManager), UnityEngine.Object.FindFirstObjectByType<GameStateManager>());
         ((Tilemap)Field(map, "_structures")).ClearAllTiles();
         Set(map, "_coinChance", 1f);
-        Set(map, "_coinSeed", 42);
+        GameplayRegressionChecks.ConfigureMap(map, Array.Empty<HazardRowDefinition>(), 42);
         Set(gameplay, "_moveAchievementIds", Array.Empty<string>());
         save.TryUpdate(data => CharacterCatalog.SelectCharacter(data, "robot"));
         Invoke(gameplay, "Start");
         Require(gameplay.ActiveCharacterId == "robot", "Saved character is used next run.");
-        Require(map.Coins.Count == 91 && map.GetCoinAmount(Vector2Int.zero) == 0, "Deterministic full-density generation skips start/back rows.");
+        Require(map.Coins.Count == MapManager.Width * MapManager.RowsAhead && map.GetCoinAmount(Vector2Int.zero) == 0, "Deterministic full-density generation skips start/back rows.");
         var obstacle = ScriptableObject.CreateInstance<Tile>();
         var occupied = new Vector2Int(-3, 1);
         Require(!map.TrySetObstacle(occupied, obstacle), "Obstacle cannot overlap coin.");
@@ -133,6 +247,16 @@ public static class CollectionRegressionChecks
         Require(player.TryMove(Vector2Int.up), "Move onto coin.");
         Require(save.Data.coins == wallet + 1 && gameplay.Score == 110 && gameplay.CollectedCoins == 1 && map.GetCoinAmount(new Vector2Int(0, 1)) == 0,
             "Coin collection persists and awards ten bonus points plus new-row score.");
+        var overflowCell = new Vector2Int(1, 1);
+        var beforeOverflow = save.Data;
+        Set(gameplay, "_pointsPerCoin", int.MaxValue);
+        bool overflowRejected = false;
+        try { player.TryMove(Vector2Int.right); }
+        catch (OverflowException) { overflowRejected = true; }
+        finally { Set(gameplay, "_pointsPerCoin", 10); }
+        Require(overflowRejected && ReferenceEquals(beforeOverflow, save.Data) && map.GetCoinAmount(overflowCell) == 1 &&
+            gameplay.Score == 110 && gameplay.CollectedCoins == 1, "Coin score overflow fails before wallet commit or coin removal.");
+        Require(player.TryMove(Vector2Int.left), "Return from the uncollected overflow coin after restoring its normal point value.");
         Require(player.TryMove(Vector2Int.down) && player.TryMove(Vector2Int.up), "Revisit collected coin.");
         Require(save.Data.coins == wallet + 1 && gameplay.Score == 110 && save.Data.totalForwardCells == 1, "Revisits cannot farm coins, points or unlock progress.");
         Require(player.TryMove(Vector2Int.up), "Enter trigger row.");
@@ -185,10 +309,8 @@ public static class CollectionRegressionChecks
         buyCat.onClick.Invoke();
         Require(save.Data.coins == 100 && CharacterCatalog.IsUnlocked(save.Data, "cat") && panel.Find("cat").GetComponent<Button>().interactable,
             "Shop purchase debits coins and refreshes unlocked card immediately.");
-        view.Sections[2].transform.Find("slime_sun/Buy or equip").GetComponent<Button>().onClick.Invoke();
-        Require(save.Data.unlockedSkinIds.Contains("slime_sun"), "Shop button purchases skin.");
-        view.Sections[2].transform.Find("slime_sun/Buy or equip").GetComponent<Button>().onClick.Invoke();
-        Require(save.Data.selectedSkinId == "slime_sun", "Owned skin button equips it.");
+        Require(view.Sections[2].transform.Find("slime_sun") == null && view.Sections[2].transform.Find("Skin heading") == null,
+            "Shop contains no removed skin controls.");
         Canvas.ForceUpdateCanvases();
         if (SystemInfo.graphicsDeviceType != UnityEngine.Rendering.GraphicsDeviceType.Null)
             CaptureMenu(menu, view);

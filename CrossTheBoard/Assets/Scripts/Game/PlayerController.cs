@@ -136,7 +136,7 @@ namespace CrossTheBoard
 #endif
         }
 
-        public void SetSkin(Sprite sprite)
+        public void SetCharacter(Sprite sprite)
         {
             if (sprite == null)
                 throw new ArgumentNullException(nameof(sprite));

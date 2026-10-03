@@ -128,8 +128,10 @@ namespace CrossTheBoard.UI
             _collectionView?.Dispose();
             if (_achievements != null)
                 _achievements.ProgressChanged -= RefreshAchievements;
-            _bgmSlider.onValueChanged.RemoveListener(SetBgmVolume);
-            _effectsSlider.onValueChanged.RemoveListener(SetEffectsVolume);
+            if (_bgmSlider != null)
+                _bgmSlider.onValueChanged.RemoveListener(SetBgmVolume);
+            if (_effectsSlider != null)
+                _effectsSlider.onValueChanged.RemoveListener(SetEffectsVolume);
         }
     }
 }

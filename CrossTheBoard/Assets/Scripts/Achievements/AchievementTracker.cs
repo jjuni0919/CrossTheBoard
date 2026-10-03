@@ -62,30 +62,22 @@ namespace CrossTheBoard
             var save = SaveManager.Instance;
             if (!save.CanSave)
                 return false;
-            var progress = save.Data.achievements.Find(item => item.id == id);
-            if (progress?.achieved == true)
+            if (IsAchieved(id))
                 return true;
-            bool isNew = progress == null;
-            progress ??= new AchievementProgress { id = id };
-            int previousValue = progress.value;
-            int previousCoins = save.Data.coins;
-            int nextValue = (int)Math.Min(definition.target, (long)progress.value + amount);
-            bool achieved = nextValue >= definition.target;
-            int nextCoins = achieved ? checked(previousCoins + definition.reward) : previousCoins;
-            if (isNew)
-                save.Data.achievements.Add(progress);
-            progress.value = nextValue;
-            progress.achieved = achieved;
-            save.Data.coins = nextCoins;
-            if (!save.Save())
+            if (!save.TryUpdate(data =>
             {
-                progress.value = previousValue;
-                progress.achieved = false;
-                save.Data.coins = previousCoins;
-                if (isNew)
-                    save.Data.achievements.Remove(progress);
+                var progress = data.achievements.Find(item => item.id == id);
+                if (progress == null)
+                {
+                    progress = new AchievementProgress { id = id };
+                    data.achievements.Add(progress);
+                }
+                progress.value = (int)Math.Min(definition.target, (long)progress.value + amount);
+                progress.achieved = progress.value >= definition.target;
+                if (progress.achieved)
+                    data.coins = checked(data.coins + definition.reward);
+            }))
                 return false;
-            }
             ProgressChanged?.Invoke();
             return true;
         }

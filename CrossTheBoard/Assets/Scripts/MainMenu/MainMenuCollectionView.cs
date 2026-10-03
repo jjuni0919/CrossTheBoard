@@ -5,7 +5,6 @@ using UnityEngine.UI;
 
 namespace CrossTheBoard.UI
 {
-    /// <summary>Adds collection/shop controls to the existing scene using its font and canvas.</summary>
     public sealed class MainMenuCollectionView : IDisposable
     {
         private static readonly Color Panel = new(0.10f, 0.141f, 0.196f);
@@ -56,8 +55,8 @@ namespace CrossTheBoard.UI
             for (int i = 0; i < Navigation.Length; i++)
             {
                 var rect = (RectTransform)Navigation[i].transform;
-                rect.anchorMin = new Vector2(i / 5f + 0.007f, 0.12f);
-                rect.anchorMax = new Vector2((i + 1) / 5f - 0.007f, 0.88f);
+                rect.anchorMin = new Vector2((float)i / Navigation.Length + 0.007f, 0.12f);
+                rect.anchorMax = new Vector2((float)(i + 1) / Navigation.Length - 0.007f, 0.88f);
                 rect.offsetMin = rect.offsetMax = Vector2.zero;
                 Navigation[i].GetComponentInChildren<Text>().fontSize = 30;
                 Navigation[i].onClick = new Button.ButtonClickedEvent();
@@ -110,33 +109,18 @@ namespace CrossTheBoard.UI
                 int column = index % 2;
                 int row = index / 2;
                 float left = 0.05f + column * 0.46f;
-                float bottom = 0.345f + (1 - row) * 0.25f;
-                var rect = Area("Buy " + character.Id, panel, left, bottom, left + 0.44f, bottom + 0.235f);
+                float bottom = 0.06f + (1 - row) * 0.39f;
+                var rect = Area("Buy " + character.Id, panel, left, bottom, left + 0.44f, bottom + 0.37f);
                 Paint(rect, Card);
                 Picture(rect, "Portrait", CharacterCatalog.GetSprite(character.Id), 0.03f, 0.28f, 0.39f, 0.93f);
                 Copy(rect, "Name", character.Name, 28, 0.43f, 0.62f, 0.96f, 0.92f);
                 Copy(rect, "Condition", "상점 구매", 21, 0.43f, 0.40f, 0.96f, 0.62f).color = Muted;
                 var buyRect = Area("Purchase", rect, 0.06f, 0.05f, 0.94f, 0.30f);
-                var button = MakeButton(buyRect, Lime, () => PurchaseCharacter(character.Id));
+                var button = MakeButton(buyRect, Lime, () => UpdateSave(data => CharacterCatalog.PurchaseCharacter(data, character.Id), "캐릭터를 구매했습니다. 캐릭터 탭에서 선택하세요."));
                 var label = Copy(buyRect, "Label", "", 25, 0, 0, 1, 1);
                 label.color = Panel;
                 _shopCards.Add(new ShopCard { Id = character.Id, Price = character.Price, Button = button, Label = label });
                 index++;
-            }
-            Copy(panel, "Skin heading", "슬라임 스킨 · 외형만 변경됩니다", 25, 0.05f, 0.278f, 0.95f, 0.328f, TextAnchor.MiddleLeft);
-            for (int i = 0; i < CharacterCatalog.Skins.Count; i++)
-            {
-                var skin = CharacterCatalog.Skins[i];
-                float left = 0.05f + i * 0.46f;
-                var rect = Area(skin.Id, panel, left, 0.035f, left + 0.44f, 0.263f);
-                Paint(rect, Card);
-                Picture(rect, "Skin", CharacterCatalog.GetSprite(skin.CharacterId, skin.Id), 0.04f, 0.35f, 0.36f, 0.94f);
-                Copy(rect, "Name", skin.Name, 26, 0.38f, 0.39f, 0.96f, 0.87f);
-                var buttonRect = Area("Buy or equip", rect, 0.06f, 0.06f, 0.94f, 0.32f);
-                var button = MakeButton(buttonRect, Lime, () => PurchaseOrEquipSkin(skin.Id));
-                var label = Copy(buttonRect, "Label", "", 25, 0, 0, 1, 1);
-                label.color = Panel;
-                _shopCards.Add(new ShopCard { Id = skin.Id, Price = skin.Price, Button = button, Label = label, Skin = true });
             }
         }
 
@@ -167,18 +151,6 @@ namespace CrossTheBoard.UI
             UpdateSave(data => CharacterCatalog.SelectCharacter(data, _previewId), "선택 완료 · 다음 게임에 적용됩니다.");
         }
 
-        private void PurchaseCharacter(string id) => UpdateSave(data => CharacterCatalog.PurchaseCharacter(data, id), "캐릭터를 구매했습니다. 캐릭터 탭에서 선택하세요.");
-
-        private void PurchaseOrEquipSkin(string id)
-        {
-            bool owned = _save.Data.unlockedSkinIds.Contains(id);
-            UpdateSave(data =>
-            {
-                if (owned) CharacterCatalog.SelectSkin(data, id);
-                else CharacterCatalog.PurchaseSkin(data, id);
-            }, owned ? "스킨 장착 완료 · 다음 게임에 적용됩니다." : "스킨을 구매했습니다. 장착 버튼으로 적용하세요.");
-        }
-
         private void UpdateSave(Action<SaveData> update, string success)
         {
             try
@@ -193,12 +165,11 @@ namespace CrossTheBoard.UI
             var data = _save.Data;
             _wallet.text = data.coins.ToString("N0");
             var current = CharacterCatalog.Find(data.selectedCharacterId) ?? CharacterCatalog.Find(CharacterCatalog.StarterId);
-            _homeImage.sprite = CharacterCatalog.GetSprite(current.Id, data.selectedSkinId);
+            _homeImage.sprite = CharacterCatalog.GetSprite(current.Id);
             _homeCharacter.text = $"다음 게임: {current.Name}";
             if (!CharacterCatalog.IsUnlocked(data, _previewId)) _previewId = current.Id;
             var preview = CharacterCatalog.Find(_previewId);
-            string skinId = data.selectedCharacterId == preview.Id ? data.selectedSkinId : CharacterCatalog.DefaultSkinId;
-            _previewImage.sprite = CharacterCatalog.GetSprite(preview.Id, skinId);
+            _previewImage.sprite = CharacterCatalog.GetSprite(preview.Id);
             _previewName.text = preview.Name;
             _previewDetails.text = preview.ConditionLabel;
             _confirm.interactable = _save.CanSave && CharacterCatalog.IsUnlocked(data, preview.Id);
@@ -220,11 +191,9 @@ namespace CrossTheBoard.UI
             }
             foreach (var card in _shopCards)
             {
-                bool owned = card.Skin ? data.unlockedSkinIds.Contains(card.Id) : CharacterCatalog.IsUnlocked(data, card.Id);
-                bool equipped = card.Skin && data.selectedSkinId == card.Id;
-                card.Label.text = owned ? (card.Skin ? (equipped ? "장착됨" : "장착") : "보유 중") : $"{card.Price:N0} 코인 · 구매";
-                bool parentOwned = !card.Skin || CharacterCatalog.IsUnlocked(data, CharacterCatalog.FindSkin(card.Id).CharacterId);
-                card.Button.interactable = _save.CanSave && (owned ? card.Skin && !equipped : parentOwned && data.coins >= card.Price);
+                bool owned = CharacterCatalog.IsUnlocked(data, card.Id);
+                card.Label.text = owned ? "보유 중" : $"{card.Price:N0} 코인 · 구매";
+                card.Button.interactable = _save.CanSave && !owned && data.coins >= card.Price;
                 card.Label.color = card.Button.interactable ? Panel : Cream;
                 if (!owned && data.coins < card.Price) card.Label.text = $"{card.Price:N0} 코인 · 코인 부족";
             }
@@ -309,7 +278,6 @@ namespace CrossTheBoard.UI
         {
             public string Id;
             public int Price;
-            public bool Skin;
             public Button Button;
             public Text Label;
         }

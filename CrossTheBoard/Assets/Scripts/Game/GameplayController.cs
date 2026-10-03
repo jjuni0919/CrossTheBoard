@@ -27,6 +27,8 @@ namespace CrossTheBoard
 
         private void Start()
         {
+            if (_pointsPerCoin < 0)
+                throw new InvalidOperationException("Coin bonus points cannot be negative.");
             var ids = new HashSet<string>();
             foreach (string id in _moveAchievementIds)
             {
@@ -51,8 +53,7 @@ namespace CrossTheBoard
             CollectedCoins = _savedForwardCells = 0;
             var save = SaveManager.Instance;
             ActiveCharacterId = save != null ? save.Data.selectedCharacterId : CharacterCatalog.StarterId;
-            string skinId = save != null ? save.Data.selectedSkinId : CharacterCatalog.DefaultSkinId;
-            _player.SetSkin(CharacterCatalog.GetSprite(ActiveCharacterId, skinId));
+            _player.SetCharacter(CharacterCatalog.GetSprite(ActiveCharacterId));
             _map.LoadRows(_player.FurthestRow);
             _player.Moved += OnPlayerMoved;
             _started = true;
@@ -64,6 +65,11 @@ namespace CrossTheBoard
 
         private void OnPlayerMoved(Vector2Int previous, Vector2Int position)
         {
+            if (_map.IsLethal(position))
+            {
+                GameStateManager.Instance.SetState(GameState.GameOver);
+                return;
+            }
             // The camera, loaded map and score share the same forward-only frontier.
             // Returning to an already visited row never awards points again.
             _map.LoadRows(_player.FurthestRow);
@@ -78,6 +84,16 @@ namespace CrossTheBoard
                 ScoreChanged?.Invoke(Score);
             }
             PersistProgressAndCollect(position);
+            int rewardPoints = _map.GetRewardPoints(position);
+            if (rewardPoints > 0)
+            {
+                int total = checked(Score + rewardPoints);
+                int itemScore = checked(ItemScore + rewardPoints);
+                _map.RemoveReward(position);
+                ItemScore = itemScore;
+                Score = total;
+                ScoreChanged?.Invoke(Score);
+            }
             _map.NotifyPlayerEntered(position);
             foreach (string id in _moveAchievementIds)
             {
@@ -94,6 +110,10 @@ namespace CrossTheBoard
             if (amount == 0 && unsavedCells == 0) return;
             var save = SaveManager.Instance;
             if (save == null) return;
+            int collectedCoins = checked(CollectedCoins + amount);
+            int coinPoints = checked(amount * _pointsPerCoin);
+            int goldScore = checked(GoldScore + coinPoints);
+            int score = checked(Score + coinPoints);
             if (!save.TryUpdate(data =>
             {
                 data.coins = checked(data.coins + amount);
@@ -109,15 +129,15 @@ namespace CrossTheBoard
             if (amount > 0)
             {
                 _map.RemoveCoin(position);
-                CollectedCoins = checked(CollectedCoins + amount);
-                AddGoldScore(checked(amount * _pointsPerCoin));
+                CollectedCoins = collectedCoins;
+                GoldScore = goldScore;
+                Score = score;
+                if (coinPoints > 0) ScoreChanged?.Invoke(Score);
             }
         }
 
-        /// <summary>Receives the gold bonus after the collector calculates its point value.</summary>
         public void AddGoldScore(int points) => AddCollectionScore(points, true);
 
-        /// <summary>Receives the bonus defined by a collected item.</summary>
         public void AddItemScore(int points) => AddCollectionScore(points, false);
 
         private void AddCollectionScore(int points, bool gold)

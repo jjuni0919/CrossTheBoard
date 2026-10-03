@@ -15,6 +15,7 @@ namespace CrossTheBoard
         public string SavePath => Path.Combine(Application.persistentDataPath, FileName);
         public bool CanSave { get; private set; } = true;
         public event Action DataChanged;
+        private bool _saving;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetInstance() => Instance = null;
@@ -33,6 +34,8 @@ namespace CrossTheBoard
 
         public bool Load()
         {
+            if (_saving)
+                return false;
             string backupPath = SavePath + ".bak";
             if (!File.Exists(SavePath) && !File.Exists(backupPath))
             {
@@ -83,19 +86,11 @@ namespace CrossTheBoard
                 var loaded = new SaveData { version = 0 };
                 JsonUtility.FromJsonOverwrite(File.ReadAllText(path), loaded);
                 data = loaded;
-                if ((loaded.version != 1 && loaded.version != SaveData.CurrentVersion) || loaded.achievements == null ||
-                    loaded.coins < 0 || !IsVolumeValid(loaded.bgmVolume) || !IsVolumeValid(loaded.effectsVolume))
+                if (loaded.version < 1 || loaded.version > SaveData.CurrentVersion)
                     throw new InvalidDataException("Invalid save data or unsupported save version.");
-                var ids = new HashSet<string>();
-                foreach (var progress in loaded.achievements)
-                {
-                    if (progress == null || string.IsNullOrWhiteSpace(progress.id) || progress.value < 0 || !ids.Add(progress.id))
-                        throw new InvalidDataException("Invalid achievement progress.");
-                }
-                // FromJsonOverwrite retains constructor defaults for fields absent in v1.
-                // The existing wallet, achievement and audio data are kept intact.
+                // Missing legacy fields retain the SaveData defaults.
                 loaded.version = SaveData.CurrentVersion;
-                ValidateCollectionData(loaded);
+                ValidateData(loaded);
                 CharacterCatalog.EvaluateUnlocks(loaded);
                 data = loaded;
                 return true;
@@ -110,8 +105,16 @@ namespace CrossTheBoard
 
         public bool Save()
         {
-            if (!CanSave)
+            if (!CanSave || _saving)
                 return false;
+            ValidateData(Data);
+            _saving = true;
+            try { return WriteData(); }
+            finally { _saving = false; }
+        }
+
+        private bool WriteData()
+        {
             try
             {
                 Directory.CreateDirectory(Application.persistentDataPath);
@@ -127,8 +130,7 @@ namespace CrossTheBoard
                 Debug.LogError($"Could not save game data: {exception.Message}", this);
                 return false;
             }
-            // A broken UI listener must not turn a completed disk write into a
-            // failed transaction or roll the wallet back only in memory.
+            // Listener failures are logged separately from an already committed disk write.
             if (DataChanged != null)
             {
                 foreach (Action listener in DataChanged.GetInvocationList())
@@ -140,44 +142,52 @@ namespace CrossTheBoard
             return true;
         }
 
-        /// <summary>Commit a complete candidate, or keep the original data if persistence fails.</summary>
         public bool TryUpdate(Action<SaveData> update)
         {
             if (update == null)
                 throw new ArgumentNullException(nameof(update));
-            if (!CanSave)
+            if (!CanSave || _saving)
                 return false;
             SaveData original = Data;
-            var candidate = JsonUtility.FromJson<SaveData>(JsonUtility.ToJson(original));
-            update(candidate);
-            CharacterCatalog.EvaluateUnlocks(candidate);
-            ValidateCollectionData(candidate);
-            Data = candidate;
-            if (Save())
-                return true;
-            Data = original;
-            return false;
+            bool saved = false;
+            _saving = true;
+            try
+            {
+                var candidate = JsonUtility.FromJson<SaveData>(JsonUtility.ToJson(original));
+                update(candidate);
+                ValidateData(candidate);
+                CharacterCatalog.EvaluateUnlocks(candidate);
+                Data = candidate;
+                saved = WriteData();
+                return saved;
+            }
+            finally
+            {
+                if (!saved) Data = original;
+                _saving = false;
+            }
         }
 
-        private static void ValidateCollectionData(SaveData data)
+        private static void ValidateData(SaveData data)
         {
+            if (data.version != SaveData.CurrentVersion || !IsVolumeValid(data.bgmVolume) ||
+                !IsVolumeValid(data.effectsVolume) || data.achievements == null)
+                throw new InvalidDataException("Invalid save version, audio settings or achievement list.");
+            var ids = new HashSet<string>();
+            foreach (var progress in data.achievements)
+                if (progress == null || string.IsNullOrWhiteSpace(progress.id) || progress.value < 0 || !ids.Add(progress.id))
+                    throw new InvalidDataException("Invalid achievement progress.");
             if (data.coins < 0 || data.totalCoinsCollected < 0 || data.totalForwardCells < 0 || data.bestDistance < 0 ||
-                data.unlockedCharacterIds == null || data.unlockedSkinIds == null)
+                data.unlockedCharacterIds == null)
                 throw new InvalidDataException("Invalid wallet or collection progress.");
             var characterIds = new HashSet<string>();
             foreach (string id in data.unlockedCharacterIds)
                 if (string.IsNullOrWhiteSpace(id) || !characterIds.Add(id))
                     throw new InvalidDataException("Invalid character unlock list.");
-            var skinIds = new HashSet<string>();
-            foreach (string id in data.unlockedSkinIds)
-                if (string.IsNullOrWhiteSpace(id) || !skinIds.Add(id))
-                    throw new InvalidDataException("Invalid skin unlock list.");
             if (!characterIds.Contains(CharacterCatalog.StarterId))
                 data.unlockedCharacterIds.Add(CharacterCatalog.StarterId);
             if (CharacterCatalog.Find(data.selectedCharacterId) == null || !data.unlockedCharacterIds.Contains(data.selectedCharacterId))
                 data.selectedCharacterId = CharacterCatalog.StarterId;
-            if (!CharacterCatalog.CanUseSkin(data, data.selectedCharacterId, data.selectedSkinId))
-                data.selectedSkinId = CharacterCatalog.DefaultSkinId;
         }
 
         private static bool IsVolumeValid(float value) => !float.IsNaN(value) && value >= 0f && value <= 1f;

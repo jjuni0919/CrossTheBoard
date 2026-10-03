@@ -3,7 +3,6 @@ using UnityEngine;
 
 namespace CrossTheBoard
 {
-    /// <summary>Small code-generated placeholders; replace the catalog art when final assets arrive.</summary>
     public static class PlaceholderSprites
     {
         private static readonly Dictionary<string, Sprite> Cache = new();
@@ -67,6 +66,23 @@ namespace CrossTheBoard
                 }
             Cache["coin"] = MakeSprite("Coin", size, colors, 24f);
             return Cache["coin"];
+        }
+
+        public static Sprite Reward()
+        {
+            if (Cache.TryGetValue("reward", out var existing) && existing != null) return existing;
+            const int size = 16;
+            var colors = new Color[size * size];
+            for (int y = 0; y < size; y++)
+                for (int x = 0; x < size; x++)
+                {
+                    float distance = Mathf.Abs(x - 7.5f) + Mathf.Abs(y - 7.5f);
+                    if (distance > 6f) continue;
+                    colors[y * size + x] = distance > 4f ? new Color(0.12f, 0.34f, 0.65f) :
+                        y > 7 ? new Color(0.65f, 0.94f, 1f) : new Color(0.3f, 0.7f, 1f);
+                }
+            Cache["reward"] = MakeSprite("Bonus Reward", size, colors, 24f);
+            return Cache["reward"];
         }
 
         private static Sprite MakeSprite(string name, int size, Color[] colors, float pixelsPerUnit)

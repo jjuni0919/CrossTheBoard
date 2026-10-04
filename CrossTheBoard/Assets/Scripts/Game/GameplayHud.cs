@@ -9,8 +9,10 @@ namespace CrossTheBoard
     {
         private GameplayController _gameplay;
         private SaveManager _save;
+        private PlayerController _player;
         private Text _score;
         private Text _coins;
+        private Text _health;
         private Font _font;
 
         public static void Create(GameplayController gameplay)
@@ -23,6 +25,7 @@ namespace CrossTheBoard
         private void Initialize(GameplayController gameplay)
         {
             _gameplay = gameplay;
+            _player = gameplay.Player;
             _save = SaveManager.Instance;
             _font = Font.CreateDynamicFontFromOSFont(new[] { "Malgun Gothic", "Noto Sans CJK KR", "Arial" }, 32);
             GetComponent<Canvas>().renderMode = RenderMode.ScreenSpaceOverlay;
@@ -38,6 +41,7 @@ namespace CrossTheBoard
             }
             _score = Label("Score", new Vector2(0.055f, 0.945f), new Vector2(0.47f, 0.98f));
             _coins = Label("Coins", new Vector2(0.055f, 0.915f), new Vector2(0.47f, 0.945f));
+            _health = Label("Health", new Vector2(0.5f, 0.945f), new Vector2(0.73f, 0.98f));
             var back = new GameObject("Back to menu", typeof(RectTransform), typeof(Image), typeof(Button));
             var backRect = (RectTransform)back.transform;
             backRect.SetParent(transform, false);
@@ -57,8 +61,10 @@ namespace CrossTheBoard
             label.text = "메뉴";
             label.alignment = TextAnchor.MiddleCenter;
             _gameplay.ScoreChanged += RefreshScore;
+            _player.HealthChanged += RefreshHealth;
             if (_save != null) _save.DataChanged += RefreshCoins;
             RefreshScore(_gameplay.Score);
+            RefreshHealth(_player.Health);
             RefreshCoins();
         }
 
@@ -80,11 +86,13 @@ namespace CrossTheBoard
         }
 
         private void RefreshScore(int value) => _score.text = $"점수  {value:N0}";
+        private void RefreshHealth(int value) => _health.text = $"HP  {value}/{_player.MaxHealth}";
         private void RefreshCoins() => _coins.text = $"코인  {(_save != null ? _save.Data.coins : 0):N0}";
 
         private void OnDestroy()
         {
             if (_gameplay != null) _gameplay.ScoreChanged -= RefreshScore;
+            if (_player != null) _player.HealthChanged -= RefreshHealth;
             if (_save != null) _save.DataChanged -= RefreshCoins;
             if (_font != null) Destroy(_font);
         }

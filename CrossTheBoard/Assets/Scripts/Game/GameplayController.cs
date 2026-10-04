@@ -19,6 +19,7 @@ namespace CrossTheBoard
         public int ItemScore { get; private set; }
         public string ActiveCharacterId { get; private set; }
         public int CollectedCoins { get; private set; }
+        public PlayerController Player => _player;
         public event Action<int> ScoreChanged;
         private int _scoredRow;
         private bool _started;
@@ -70,6 +71,8 @@ namespace CrossTheBoard
                 GameStateManager.Instance.SetState(GameState.GameOver);
                 return;
             }
+            _map.DamagePlayerAt(position);
+            if (GameStateManager.Instance.State != GameState.Playing) return;
             // The camera, loaded map and score share the same forward-only frontier.
             // Returning to an already visited row never awards points again.
             _map.LoadRows(_player.FurthestRow);

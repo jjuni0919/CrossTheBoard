@@ -54,13 +54,13 @@ public static class MapPatternRegressionChecks
     private static MovingObstacleDefinition Patrol(int x, int row) => new()
     {
         position = new Vector2Int(x, row), movement = ObstacleMovement.Patrol, distance = 3,
-        tile = AssetDatabase.LoadAssetAtPath<TileBase>("Assets/Gameplay/ObstacleTile.asset")
+        tile = AssetDatabase.LoadAssetAtPath<TileBase>("Assets/Gameplay/RollingRockTile.asset")
     };
 
     private static MovingObstacleDefinition Chase(int x, int row) => new()
     {
         position = new Vector2Int(x, row), movement = ObstacleMovement.Chase, stepInterval = 1f,
-        tile = AssetDatabase.LoadAssetAtPath<TileBase>("Assets/Gameplay/ObstacleTile.asset")
+        tile = AssetDatabase.LoadAssetAtPath<TileBase>("Assets/Gameplay/MonsterTile.asset")
     };
 
     private static void CreateSample(string name, int length, string theme, Vector2Int[] obstacles,
@@ -228,8 +228,9 @@ public static class MapPatternRegressionChecks
         {
             var definition = (MovingObstacleDefinition)Field(movers[i], "Definition");
             var position = (Vector2Int)Field(movers[i], "Position");
-            Require(definition.position == authoredPositions[i] && position != positions[i] && map.CanMoveTo(positions[i]) && !map.CanMoveTo(position),
-                "Runtime movement changes map occupancy without changing prefab spawn coordinates.");
+            Require(definition.position == authoredPositions[i] && position != positions[i] && map.GetContactDamage(positions[i]) == 0 &&
+                map.CanMoveTo(position) && map.GetContactDamage(position) > 0,
+                "Runtime movement relocates contact damage without changing prefab spawn coordinates.");
             if (definition.movement == ObstacleMovement.Patrol)
             {
                 Require(position == positions[i] + definition.direction, "Patrol moves exactly one cell along its authored direction.");

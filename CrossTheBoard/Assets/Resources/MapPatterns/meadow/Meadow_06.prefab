@@ -237,7 +237,7 @@ MonoBehaviour:
   _lavaRows: []
   _movingObstacles:
   - position: {x: -3, y: 4}
-    tile: {fileID: 11400000, guid: 6ebda73356c741b6a92ca96d0ff278e4, type: 2}
+    tile: {fileID: 11400000, guid: e972a3e2c0df4d2f83a67d7a55a41f2f, type: 2}
     movement: 0
     direction: {x: 1, y: 0}
     distance: 3

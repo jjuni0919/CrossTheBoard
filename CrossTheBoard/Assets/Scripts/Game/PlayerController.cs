@@ -12,10 +12,16 @@ namespace CrossTheBoard
         [SerializeField] private Vector2Int _startPosition = new(0, 0);
         [SerializeField] private SpriteRenderer _appearance;
         [SerializeField, Range(0.01f, 0.25f)] private float _swipeThreshold = 0.04f;
+        [SerializeField, Min(1)] private int _maxHealth = 3;
+        [SerializeField, Min(0f)] private float _damageInterval = 0.75f;
         public Vector2Int Position { get; private set; }
         public int FurthestRow { get; private set; }
+        public int Health { get; private set; }
+        public int MaxHealth => _maxHealth;
         public event Action<Vector2Int, Vector2Int> Moved;
+        public event Action<int> HealthChanged;
         private MapManager _map;
+        private float _nextDamageTime;
         private Vector2 _swipeStart;
         private int _fingerId = -1;
         private bool _mouseDragging;
@@ -28,10 +34,15 @@ namespace CrossTheBoard
                 throw new ArgumentNullException(nameof(map));
             if (!map.CanMoveTo(_startPosition))
                 throw new InvalidOperationException("The player start cell is outside the map or blocked.");
+            if (_maxHealth <= 0 || float.IsNaN(_damageInterval) || float.IsInfinity(_damageInterval) || _damageInterval < 0f)
+                throw new InvalidOperationException("Player health must be positive and damage interval must be finite and nonnegative.");
             _map = map;
             Position = _startPosition;
             FurthestRow = Position.y;
+            Health = _maxHealth;
+            _nextDamageTime = float.NegativeInfinity;
             transform.position = _map.GetWorldPosition(Position);
+            HealthChanged?.Invoke(Health);
             LogPosition();
         }
 
@@ -126,6 +137,21 @@ namespace CrossTheBoard
             transform.position = _map.GetWorldPosition(Position);
             LogPosition();
             Moved?.Invoke(previous, Position);
+            return true;
+        }
+
+        public bool TakeDamage(int amount)
+        {
+            if (amount <= 0)
+                throw new ArgumentOutOfRangeException(nameof(amount));
+            if (_map == null || !isActiveAndEnabled || GameStateManager.Instance.State != GameState.Playing ||
+                Health == 0 || Time.time < _nextDamageTime)
+                return false;
+            Health = Mathf.Max(0, Health - amount);
+            _nextDamageTime = Time.time + _damageInterval;
+            if (Health == 0)
+                GameStateManager.Instance.SetState(GameState.GameOver);
+            HealthChanged?.Invoke(Health);
             return true;
         }
 

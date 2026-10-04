@@ -79,17 +79,40 @@ namespace CrossTheBoard
         public bool CanMoveTo(Vector2Int position)
         {
             if (position.x < -HalfWidth || position.x > HalfWidth) return false;
-            var cell = new Vector3Int(position.x, position.y, 0);
-            if (_structures.HasTile(cell)) return false;
-            if (_ground.HasTile(cell)) return true;
+            var tile = GetStructure(position);
+            return tile == null || tile is DamageTile;
+        }
+
+        private TileBase GetStructure(Vector2Int position)
+        {
+            var cell = (Vector3Int)position;
+            var tile = _structures.GetTile(cell);
+            if (tile != null || _ground.HasTile(cell)) return tile;
             var pattern = GetPattern(position.y);
-            return pattern == null || pattern.Template.GetObstacle(new Vector2Int(position.x, position.y - pattern.FirstRow)) == null;
+            return pattern?.Template.Structures.GetTile(new Vector3Int(position.x, position.y - pattern.FirstRow, 0));
+        }
+
+        public int GetContactDamage(Vector2Int position) => GetStructure(position) is DamageTile tile ? tile.Damage : 0;
+
+        public void DamagePlayerAt(Vector2Int position)
+        {
+            if (position != _player.Position) return;
+            int damage = GetContactDamage(position);
+            if (damage > 0) _player.TakeDamage(damage);
         }
 
         public bool IsLethal(Vector2Int position) =>
             _steppingStones.TryGetValue(position.y, out var columns) && !columns.Contains(position.x);
 
-        private bool IsSafeCell(Vector2Int position) => CanMoveTo(position) && !IsLethal(position);
+        private bool IsSafeCell(Vector2Int position) => CanMoveTo(position) && !IsLethal(position) &&
+            (GetContactDamage(position) == 0 || GetMovingObstacle(position) != null);
+
+        private MovingObstacle GetMovingObstacle(Vector2Int position)
+        {
+            foreach (var obstacle in _movingObstacles)
+                if (obstacle.Position == position) return obstacle;
+            return null;
+        }
 
         private bool CanStandOn(Vector2Int position) => IsSafeCell(position) &&
             _ground.HasTile(new Vector3Int(position.x, position.y, 0));
@@ -137,8 +160,10 @@ namespace CrossTheBoard
                 {
                     var position = definition.position + new Vector2Int(0, pattern.FirstRow);
                     if (position.y <= _highestGeneratedRow || position.y < firstRow || position.y >= firstRow + VisibleRows) continue;
-                    if (!TrySetObstacle(position, definition.tile))
+                    var cell = (Vector3Int)position;
+                    if (!CanStandOn(position) || _structures.HasTile(cell) || position == _player.Position)
                         throw new InvalidOperationException($"Moving obstacle in '{pattern.Template.name}' could not be placed at {position}.");
+                    _structures.SetTile(cell, definition.tile);
                     _movingObstacles.Add(new MovingObstacle { Definition = definition, Origin = position, Position = position,
                         NextMoveTime = Time.time + definition.stepInterval });
                 }
@@ -241,7 +266,7 @@ namespace CrossTheBoard
                 if (random.NextDouble() < _coinChance && reachable.Contains(position))
                     TryPlaceCoin(position, 1, reachable);
                 else if (random.NextDouble() < _rewardChance && reachable.Contains(position) &&
-                    !_coins.ContainsKey(position) && !_registeredCells.ContainsKey(position))
+                    GetContactDamage(position) == 0 && !_coins.ContainsKey(position) && !_registeredCells.ContainsKey(position))
                 {
                     _rewards.Add(position, _rewardPoints);
                     _coinLayer.SetTile((Vector3Int)position, _rewardTile);
@@ -259,7 +284,7 @@ namespace CrossTheBoard
         private bool TryPlaceCoin(Vector2Int position, int amount, HashSet<Vector2Int> reachable)
         {
             var cell = new Vector3Int(position.x, position.y, 0);
-            if (!CanStandOn(position) || _registeredCells.ContainsKey(position) || _coins.ContainsKey(position) || _rewards.ContainsKey(position) ||
+            if (!CanStandOn(position) || GetContactDamage(position) > 0 || _registeredCells.ContainsKey(position) || _coins.ContainsKey(position) || _rewards.ContainsKey(position) ||
                 !reachable.Contains(position))
                 return false;
             _coins.Add(position, amount);
@@ -287,10 +312,13 @@ namespace CrossTheBoard
         public bool TrySetObstacle(Vector2Int position, TileBase tile)
         {
             if (tile == null) throw new ArgumentNullException(nameof(tile));
+            if (tile is DamageTile damageTile && damageTile.Damage <= 0)
+                throw new ArgumentException("Damage tiles require positive damage.", nameof(tile));
             EnsureContentInitialized();
             if (!CanStandOn(position) || position == _player.Position || _coins.ContainsKey(position) || _rewards.ContainsKey(position) || _registeredCells.ContainsKey(position))
                 return false;
             var cell = new Vector3Int(position.x, position.y, 0);
+            if (_structures.HasTile(cell)) return false;
             _structures.SetTile(cell, tile);
             if (!HasValidRoutes())
             {
@@ -302,6 +330,17 @@ namespace CrossTheBoard
 
         public bool TryMoveObstacle(Vector2Int from, Vector2Int to)
         {
+            var moving = GetMovingObstacle(from);
+            if (moving != null)
+            {
+                if (!_loaded || (to - from).sqrMagnitude != 1 || !CanStandOn(to) ||
+                    _structures.HasTile((Vector3Int)to)) return false;
+                _structures.SetTile((Vector3Int)from, null);
+                _structures.SetTile((Vector3Int)to, moving.Definition.tile);
+                moving.Position = to;
+                DamagePlayerAt(to);
+                return true;
+            }
             if (!_loaded || (to - from).sqrMagnitude != 1 || !CanStandOn(to) || to == _player.Position ||
                 _coins.ContainsKey(to) || _rewards.ContainsKey(to) || _registeredCells.ContainsKey(to)) return false;
             var source = new Vector3Int(from.x, from.y, 0);
@@ -353,7 +392,8 @@ namespace CrossTheBoard
                 foreach (var direction in Directions)
                 {
                     var destination = position + direction;
-                    if (!CanStandOn(destination) || parents.ContainsKey(destination)) continue;
+                    if (!CanStandOn(destination) || parents.ContainsKey(destination) ||
+                        destination != target && GetMovingObstacle(destination) != null) continue;
                     parents.Add(destination, position);
                     if (destination == target)
                     {
@@ -379,7 +419,7 @@ namespace CrossTheBoard
                 throw new ArgumentException("A cell trigger requires a stable ID.", nameof(definition));
             var position = definition.position;
             if (position.x < -HalfWidth || position.x > HalfWidth || IsLethal(position) ||
-                !CanMoveTo(position) ||
+                !CanMoveTo(position) || GetContactDamage(position) > 0 ||
                 _coins.ContainsKey(position) || _rewards.ContainsKey(position) || _registeredCells.ContainsKey(position) ||
                 _loaded && position.y < _firstRow ||
                 _loaded && _ground.HasTile(new Vector3Int(position.x, position.y, 0)) && !GetReachableCells().Contains(position))
@@ -461,7 +501,8 @@ namespace CrossTheBoard
         private HashSet<Vector2Int> GetReachableCells()
         {
             var reachable = new HashSet<Vector2Int>();
-            if (!_loaded || !CanStandOn(_player.Position)) return reachable;
+            if (!_loaded || !CanMoveTo(_player.Position) || IsLethal(_player.Position) ||
+                !_ground.HasTile((Vector3Int)_player.Position)) return reachable;
             var start = new Vector3Int(_player.Position.x, _player.Position.y, _player.FurthestRow);
             var visited = new HashSet<Vector3Int> { start };
             var queue = new Queue<Vector3Int>();
@@ -484,7 +525,8 @@ namespace CrossTheBoard
 
         private bool HasValidRoutes()
         {
-            if (!_loaded || !CanStandOn(_player.Position)) return false;
+            if (!_loaded || !CanMoveTo(_player.Position) || IsLethal(_player.Position) ||
+                !_ground.HasTile((Vector3Int)_player.Position)) return false;
             int lastRow = _firstRow + VisibleRows - 1;
             // Adjacent rows stay connected so advancing cannot strand a collectible
             // behind a wall that would require two backward steps to go around.
@@ -629,6 +671,8 @@ namespace CrossTheBoard
         private void Update()
         {
             if (!_loaded || GameStateManager.Instance == null || GameStateManager.Instance.State != GameState.Playing) return;
+            DamagePlayerAt(_player.Position);
+            if (GameStateManager.Instance.State != GameState.Playing) return;
             AdvanceMovingObstacles(Time.time);
         }
 
@@ -636,6 +680,7 @@ namespace CrossTheBoard
         {
             foreach (var obstacle in _movingObstacles)
             {
+                if (GameStateManager.Instance.State != GameState.Playing) return;
                 if (now < obstacle.NextMoveTime) continue;
                 var definition = obstacle.Definition;
                 obstacle.NextMoveTime = now + definition.stepInterval;
@@ -652,8 +697,8 @@ namespace CrossTheBoard
                     else if (step == 0) obstacle.Direction = 1;
                     next = obstacle.Position + definition.direction * obstacle.Direction;
                 }
-                if (TryMoveObstacle(obstacle.Position, next)) obstacle.Position = next;
-                else if (definition.movement == ObstacleMovement.Patrol) obstacle.Direction = -obstacle.Direction;
+                if (!TryMoveObstacle(obstacle.Position, next) && definition.movement == ObstacleMovement.Patrol)
+                    obstacle.Direction = -obstacle.Direction;
             }
         }
 

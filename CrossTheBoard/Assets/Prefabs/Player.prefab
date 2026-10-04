@@ -48,6 +48,8 @@ MonoBehaviour:
   _startPosition: {x: 0, y: 0}
   _appearance: {fileID: 8337025568734830154}
   _swipeThreshold: 0.04
+  _maxHealth: 3
+  _damageInterval: 0.75
 --- !u!1 &7053380966945587763
 GameObject:
   m_ObjectHideFlags: 0

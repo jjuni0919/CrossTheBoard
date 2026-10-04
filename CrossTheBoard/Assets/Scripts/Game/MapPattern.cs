@@ -63,20 +63,21 @@ namespace CrossTheBoard
                 if (!_structures.HasTile(position)) continue;
                 if (!Contains(position))
                     throw new InvalidOperationException($"Obstacle in '{name}' is outside the pattern.");
+                if (_structures.GetTile(position) is DamageTile damageTile && damageTile.Damage <= 0)
+                    throw new InvalidOperationException($"Damage tiles in '{name}' require positive damage.");
                 blocked.Add(new Vector2Int(position.x, position.y));
             }
             foreach (var obstacle in _movingObstacles)
             {
-                if (obstacle == null || obstacle.tile == null || !Contains((Vector3Int)obstacle.position) ||
+                if (obstacle == null || obstacle.tile is not DamageTile damageTile || damageTile.Damage <= 0 || !Contains((Vector3Int)obstacle.position) ||
                     !Enum.IsDefined(typeof(ObstacleMovement), obstacle.movement) ||
                     float.IsNaN(obstacle.stepInterval) || float.IsInfinity(obstacle.stepInterval) || obstacle.stepInterval <= 0f ||
                     !blocked.Add(obstacle.position))
                     throw new InvalidOperationException($"Invalid or overlapping moving obstacle in '{name}'.");
                 if (obstacle.movement == ObstacleMovement.Patrol &&
-                    (obstacle.direction != Vector2Int.up && obstacle.direction != Vector2Int.down &&
-                        obstacle.direction != Vector2Int.left && obstacle.direction != Vector2Int.right ||
+                    (obstacle.direction != Vector2Int.left && obstacle.direction != Vector2Int.right ||
                         obstacle.distance < 1 || obstacle.distance > MaximumLength))
-                    throw new InvalidOperationException($"Patrol in '{name}' requires a cardinal direction and a positive distance.");
+                    throw new InvalidOperationException($"Rolling rocks in '{name}' require a horizontal direction and a positive distance.");
             }
             var lava = new Dictionary<int, HashSet<int>>();
             foreach (var row in _lavaRows)

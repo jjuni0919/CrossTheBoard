@@ -287,12 +287,35 @@ public static class CollectionRegressionChecks
         Singleton(typeof(SaveManager), save);
         save.Load();
         var menu = UnityEngine.Object.FindFirstObjectByType<MainMenuBootstrap>();
-        using var view = new MainMenuCollectionView(menu, (GameObject[])Field(menu, "_sections"), (Button[])Field(menu, "_navigation"), ((Text)Field(menu, "_achievementSummary")).font);
-        Set(menu, "_sections", view.Sections);
-        Set(menu, "_navigation", view.Navigation);
-        Require(view.Sections.Length == 5 && view.Navigation.Length == 5, "Existing four navigation slots expand with character tab.");
+        var view = UnityEngine.Object.FindFirstObjectByType<MainMenuCollectionView>();
+        var sections = (GameObject[])Field(menu, "_sections");
+        var navigation = (Button[])Field(menu, "_navigation");
+        Require(view != null && sections.Length == 5 && navigation.Length == 5, "Five sections and navigation buttons are authored in the scene.");
+        int canvasObjectCount = navigation[0].GetComponentInParent<Canvas>().GetComponentsInChildren<Transform>(true).Length;
+        foreach (var section in sections) Require(section != null, "Every section is serialized.");
+        foreach (var button in navigation) Require(button != null && button.onClick.GetPersistentEventCount() == 2, "Navigation and status reset callbacks are saved in the scene.");
+        var serialized = new SerializedObject(view);
+        var reference = serialized.GetIterator();
+        while (reference.NextVisible(true))
+        {
+            if (reference.propertyType == SerializedPropertyType.ObjectReference)
+                Require(reference.objectReferenceValue != null, "Collection references are complete: " + reference.propertyPath);
+        }
+        foreach (var image in navigation[0].GetComponentInParent<Canvas>().GetComponentsInChildren<Image>(true))
+        {
+            if (image.sprite != null) Require(AssetDatabase.Contains(image.sprite), "Menu sprites are saved assets, not generated in memory.");
+        }
+        foreach (var button in navigation[0].GetComponentInParent<Canvas>().GetComponentsInChildren<Button>(true))
+        {
+            for (int i = 0; i < button.onClick.GetPersistentEventCount(); i++)
+                button.onClick.SetPersistentListenerState(i, UnityEngine.Events.UnityEventCallState.EditorAndRuntime);
+        }
+        Invoke(view, "Awake");
+        Invoke(view, "Start");
+        Require(canvasObjectCount == navigation[0].GetComponentInParent<Canvas>().GetComponentsInChildren<Transform>(true).Length,
+            "Initializing collections creates no UI objects.");
         menu.SelectSection(1);
-        var panel = view.Sections[1].transform;
+        var panel = sections[1].transform;
         Require(panel.Find("robot").GetComponent<Button>().interactable && !panel.Find("cat").GetComponent<Button>().interactable, "Owned/locked character cards differ and locked cards are not selectable.");
         view.PreviewCharacter("cat");
         Require(save.Data.selectedCharacterId == "robot", "Locked preview does not change selection.");
@@ -300,25 +323,28 @@ public static class CollectionRegressionChecks
         Require(save.Data.selectedCharacterId == "robot", "Unlocked preview does not commit immediately.");
         view.ConfirmCharacter();
         Require(save.Data.selectedCharacterId == "slime" && save.Load() && save.Data.selectedCharacterId == "slime", "Confirm commits next-game selection and survives reload.");
-        view.Navigation[2].onClick.Invoke();
-        Require(view.Sections[2].activeSelf && !view.Sections[1].activeSelf, "Rebound navigation opens correct shop after adding tab.");
-        Require(view.Sections[2].transform.Find("Buy cat/Purchase").GetComponent<Button>().interactable == false, "Insufficient wallet disables shop purchase.");
+        navigation[2].onClick.Invoke();
+        Require(sections[2].activeSelf && !sections[1].activeSelf, "Serialized navigation opens the correct shop.");
+        Require(((Text)Field(view, "_status")).text == string.Empty, "Changing tabs clears transient collection messages.");
+        Require(sections[2].transform.Find("Buy cat/Purchase").GetComponent<Button>().interactable == false, "Insufficient wallet disables shop purchase.");
         save.TryUpdate(data => data.coins = 200);
-        var buyCat = view.Sections[2].transform.Find("Buy cat/Purchase").GetComponent<Button>();
+        var buyCat = sections[2].transform.Find("Buy cat/Purchase").GetComponent<Button>();
         Require(buyCat.interactable, "Wallet refresh enables affordable purchases.");
         buyCat.onClick.Invoke();
         Require(save.Data.coins == 100 && CharacterCatalog.IsUnlocked(save.Data, "cat") && panel.Find("cat").GetComponent<Button>().interactable,
             "Shop purchase debits coins and refreshes unlocked card immediately.");
-        Require(view.Sections[2].transform.Find("slime_sun") == null && view.Sections[2].transform.Find("Skin heading") == null,
+        Require(sections[2].transform.Find("slime_sun") == null && sections[2].transform.Find("Skin heading") == null,
             "Shop contains no removed skin controls.");
+        Require(canvasObjectCount == navigation[0].GetComponentInParent<Canvas>().GetComponentsInChildren<Transform>(true).Length,
+            "Purchases and selection refresh existing UI without creating objects.");
         Canvas.ForceUpdateCanvases();
         if (SystemInfo.graphicsDeviceType != UnityEngine.Rendering.GraphicsDeviceType.Null)
-            CaptureMenu(menu, view);
+            CaptureMenu(menu, navigation);
     }
 
-    private static void CaptureMenu(MainMenuBootstrap menu, MainMenuCollectionView view)
+    private static void CaptureMenu(MainMenuBootstrap menu, Button[] navigation)
     {
-        var canvas = view.Navigation[0].GetComponentInParent<Canvas>();
+        var canvas = navigation[0].GetComponentInParent<Canvas>();
         var cameraObject = new GameObject("Validation preview camera", typeof(Camera));
         var camera = cameraObject.GetComponent<Camera>();
         camera.orthographic = true;
@@ -335,7 +361,7 @@ public static class CollectionRegressionChecks
         canvas.renderMode = RenderMode.ScreenSpaceCamera;
         canvas.worldCamera = camera;
         canvas.planeDistance = 10;
-        for (int i = 0; i < 3; i++)
+        for (int i = 0; i < navigation.Length; i++)
         {
             menu.SelectSection(i);
             Canvas.ForceUpdateCanvases();

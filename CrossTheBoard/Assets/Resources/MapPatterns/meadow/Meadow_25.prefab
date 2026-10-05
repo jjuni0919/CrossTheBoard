@@ -47,6 +47,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::CrossTheBoard.MapObstacle
   _blocksMovement: 1
   _damage: 0
+  _contactRadius: 0.5
   _movement: 2
   _direction: {x: 1, y: 0}
   _distance: 2
@@ -99,6 +100,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::CrossTheBoard.MapObstacle
   _blocksMovement: 0
   _damage: 1
+  _contactRadius: 0.5
   _movement: 0
   _direction: {x: 1, y: 0}
   _distance: 3
@@ -242,6 +244,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::CrossTheBoard.MapObstacle
   _blocksMovement: 1
   _damage: 0
+  _contactRadius: 0.5
   _movement: 2
   _direction: {x: 1, y: 0}
   _distance: 2
@@ -385,6 +388,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::CrossTheBoard.MapObstacle
   _blocksMovement: 0
   _damage: 1
+  _contactRadius: 0.5
   _movement: 1
   _direction: {x: 1, y: 0}
   _distance: 2
@@ -437,6 +441,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::CrossTheBoard.MapObstacle
   _blocksMovement: 0
   _damage: 1
+  _contactRadius: 0.5
   _movement: 2
   _direction: {x: 1, y: 0}
   _distance: 2
@@ -580,6 +585,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::CrossTheBoard.MapObstacle
   _blocksMovement: 1
   _damage: 0
+  _contactRadius: 0.5
   _movement: 2
   _direction: {x: 1, y: 0}
   _distance: 2
@@ -1178,6 +1184,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::CrossTheBoard.MapObstacle
   _blocksMovement: 1
   _damage: 0
+  _contactRadius: 0.5
   _movement: 2
   _direction: {x: 1, y: 0}
   _distance: 2
@@ -1230,6 +1237,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::CrossTheBoard.MapObstacle
   _blocksMovement: 1
   _damage: 0
+  _contactRadius: 0.5
   _movement: 2
   _direction: {x: 1, y: 0}
   _distance: 2
@@ -1282,6 +1290,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::CrossTheBoard.MapObstacle
   _blocksMovement: 1
   _damage: 0
+  _contactRadius: 0.5
   _movement: 2
   _direction: {x: 1, y: 0}
   _distance: 2
@@ -3925,6 +3934,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::CrossTheBoard.MapObstacle
   _blocksMovement: 1
   _damage: 0
+  _contactRadius: 0.5
   _movement: 2
   _direction: {x: 1, y: 0}
   _distance: 2

@@ -65,9 +65,7 @@ namespace CrossTheBoard
         private System.Random _patternRandom;
         private MapPattern _previousPattern;
         private string _generationThemeId;
-        private string _pendingThemeId;
         private int _nextPatternRow;
-        private int _regenerateFromRow = int.MaxValue;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetInstance() => Instance = null;
@@ -95,14 +93,7 @@ namespace CrossTheBoard
 
         public void DamagePlayerAt(Vector2Int position)
         {
-            if (position != _player.Position) return;
-            if (_obstacles.TryGetValue(position, out var fixedObstacle) &&
-                fixedObstacle.Movement == ObstacleMovement.None && fixedObstacle.Damage > 0)
-                _player.TakeDamage(fixedObstacle.Damage);
-            foreach (var obstacle in _movingObstacles)
-                if ((obstacle.View.transform.position - _player.transform.position).sqrMagnitude <=
-                    obstacle.View.ContactRadius * obstacle.View.ContactRadius)
-                    _player.TakeDamage(obstacle.View.Damage);
+            if (position == _player.Position && _obstacles.ContainsKey(position)) _player.Die();
         }
 
         public bool IsLethal(Vector2Int position)
@@ -160,16 +151,6 @@ namespace CrossTheBoard
                 var current = GetPattern(_currentPatternFirstRow);
                 int boundary = checked(current.LastRow + 1);
                 while (_placedPatterns[0].FirstRow < current.FirstRow) RemovePattern(0);
-                if (_pendingThemeId != null)
-                {
-                    _generationThemeId = _pendingThemeId;
-                    _pendingThemeId = null;
-                    _previousPattern = current.Template;
-                    for (int i = _placedPatterns.Count - 1; i > 0; i--) RemovePattern(i);
-                    _nextPatternRow = boundary;
-                    _highestGeneratedRow = boundary - 1;
-                    _regenerateFromRow = boundary;
-                }
                 _currentPatternFirstRow = boundary;
                 while (_placedPatterns.Count < MaximumRenderedPatterns)
                     EnsurePatternsThrough(_nextPatternRow);
@@ -178,7 +159,7 @@ namespace CrossTheBoard
             int contentFirstRow = Math.Max(0, playerRow - RowsBehind);
             int lastRow = _placedPatterns[_placedPatterns.Count - 1].LastRow;
             if (_loaded && firstRow == _firstRow && contentFirstRow == _contentFirstRow &&
-                lastRow == _lastRow && _regenerateFromRow == int.MaxValue) return;
+                lastRow == _lastRow) return;
             UpdatePatternViews();
             _firstRow = firstRow;
             _contentFirstRow = contentFirstRow;
@@ -187,13 +168,13 @@ namespace CrossTheBoard
 
             var expiredCoins = new List<Vector2Int>();
             foreach (var coin in _coins)
-                if (coin.Key.y < contentFirstRow || coin.Key.y > lastRow || coin.Key.y >= _regenerateFromRow)
+                if (coin.Key.y < contentFirstRow || coin.Key.y > lastRow)
                     expiredCoins.Add(coin.Key);
             foreach (var position in expiredCoins)
                 RemoveCoin(position);
             var expiredRewards = new List<Vector2Int>();
             foreach (var reward in _rewards)
-                if (reward.Key.y < contentFirstRow || reward.Key.y > lastRow || reward.Key.y >= _regenerateFromRow) expiredRewards.Add(reward.Key);
+                if (reward.Key.y < contentFirstRow || reward.Key.y > lastRow) expiredRewards.Add(reward.Key);
             foreach (var position in expiredRewards) RemoveReward(position);
             UpdateChasers();
             if (!HasValidRoutes())
@@ -204,7 +185,6 @@ namespace CrossTheBoard
                 if (row > _highestGeneratedRow)
                     GenerateRowContent(row, reachable);
             }
-            _regenerateFromRow = int.MaxValue;
 
             _reachedRows.RemoveWhere(row => row < firstRow);
             var expiredCells = new List<Vector2Int>();
@@ -366,6 +346,7 @@ namespace CrossTheBoard
                 moving.Position = to;
                 moving.MoveStartTime = Time.time;
                 moving.IsMoving = true;
+                DamagePlayerAt(to);
                 return true;
             }
             if (to == _player.Position || _coins.ContainsKey(to) || _rewards.ContainsKey(to) || _registeredCells.ContainsKey(to)) return false;
@@ -413,7 +394,6 @@ namespace CrossTheBoard
         {
             next = from;
             var moving = GetMovingObstacle(from);
-            // Player paths still cross stepping stones when a monster shares the player's cell.
             bool playerPath = from == _player.Position;
             bool movingObstacle = moving != null && !playerPath;
             bool chaser = movingObstacle && moving.Definition.movement == ObstacleMovement.Chase;
@@ -431,7 +411,8 @@ namespace CrossTheBoard
                 foreach (var direction in Directions)
                 {
                     var destination = position + direction;
-                    if (!CanStandOn(destination) || playerPath && destination.y < state.z - PlayerController.MaxBackwardSteps ||
+                    if (!CanStandOn(destination) || playerPath && (GetContactDamage(destination) > 0 ||
+                        destination.y < state.z - PlayerController.MaxBackwardSteps) ||
                         chaser && _lavaRows.Contains(destination.y) ||
                         movingObstacle && destination != target && GetMovingObstacle(destination) != null) continue;
                     var nextState = new Vector3Int(destination.x, destination.y, playerPath ? Math.Max(state.z, destination.y) : 0);
@@ -508,7 +489,6 @@ namespace CrossTheBoard
                 if (row.row != position.y || row.oncePerRun && !_firedRowTriggers.Add(row.id)) continue;
                 row.onReached?.Invoke();
                 RowTriggered?.Invoke(row.id, position.y);
-                if (!string.IsNullOrEmpty(row.nextThemeId)) RequestThemeChange(row.nextThemeId);
             }
         }
 
@@ -785,6 +765,7 @@ namespace CrossTheBoard
                 _placedPatterns.Add(placement);
                 foreach (var lava in selected.LavaRows)
                     _lavaRows.Add(placement.FirstRow + lava.row);
+                int nextThemeRow = -1;
                 foreach (var trigger in selected.RowTriggers)
                 {
                     var instance = new RowTriggerDefinition
@@ -798,6 +779,11 @@ namespace CrossTheBoard
                     if (!TryRegisterRowTrigger(instance))
                         throw new InvalidOperationException($"Pattern trigger '{instance.id}' is duplicated.");
                     placement.TriggerIds.Add(instance.id);
+                    if (!string.IsNullOrEmpty(trigger.nextThemeId) && trigger.row >= nextThemeRow)
+                    {
+                        _generationThemeId = trigger.nextThemeId;
+                        nextThemeRow = trigger.row;
+                    }
                 }
                 _nextPatternRow = checked(placement.LastRow + 1);
                 _previousPattern = selected;
@@ -809,7 +795,7 @@ namespace CrossTheBoard
             EnsureContentInitialized();
             if (string.IsNullOrWhiteSpace(themeId) || !Array.Exists(_patterns, pattern => pattern.ThemeId == themeId))
                 throw new ArgumentException($"No patterns for theme '{themeId}'.", nameof(themeId));
-            _pendingThemeId = themeId == _generationThemeId ? null : themeId;
+            _generationThemeId = themeId;
         }
 
         private void RemovePattern(int index)

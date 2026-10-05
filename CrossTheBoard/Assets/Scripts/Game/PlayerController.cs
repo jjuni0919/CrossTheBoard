@@ -160,6 +160,16 @@ namespace CrossTheBoard
             return true;
         }
 
+        public bool Die()
+        {
+            if (_map == null || !isActiveAndEnabled || Health == 0 || GameStateManager.Instance.State != GameState.Playing)
+                return false;
+            Health = 0;
+            GameStateManager.Instance.SetState(GameState.GameOver);
+            HealthChanged?.Invoke(Health);
+            return true;
+        }
+
         internal void RideStone(Vector2Int position, Vector3 offset)
         {
             Vector2Int previous = Position;

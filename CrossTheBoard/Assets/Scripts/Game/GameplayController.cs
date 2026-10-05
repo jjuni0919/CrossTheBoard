@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -7,6 +8,7 @@ namespace CrossTheBoard
     public sealed class GameplayController : MonoBehaviour
     {
         public const int PointsPerForwardCell = 100;
+        public const float GameOverDisplaySeconds = 3f;
 
         [SerializeField] private MapManager _map;
         [SerializeField] private PlayerController _player;
@@ -73,7 +75,7 @@ namespace CrossTheBoard
         {
             if (_map.IsLethal(position))
             {
-                GameStateManager.Instance.SetState(GameState.GameOver);
+                _player.Die();
                 return;
             }
             _map.DamagePlayerAt(position);
@@ -165,6 +167,12 @@ namespace CrossTheBoard
             }))
                 Debug.LogWarning("이번 판 결과를 저장하지 못했습니다. 기존 저장 데이터는 유지됩니다.", this);
             if (!Application.isPlaying) return;
+            StartCoroutine(ReturnToMenu());
+        }
+
+        private IEnumerator ReturnToMenu()
+        {
+            yield return new WaitForSecondsRealtime(GameOverDisplaySeconds);
             var scenes = SceneLoadManager.Instance;
             if (!scenes.IsLoading && !scenes.LoadScene(_mainMenuScene, GameState.MainMenu))
                 Debug.LogError("게임 종료 후 메인 메뉴로 이동하지 못했습니다.", this);

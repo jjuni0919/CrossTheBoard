@@ -151,7 +151,7 @@ public static class MapPatternRegressionChecks
             CheckMovingObstacles();
             CheckTraversal();
             CheckInfiniteStreaming();
-            Debug.Log("[MapPatternRegressionChecks] PASS: invalid tiles/overlaps/blocked rows rejected, row-one start, six resources, three live prefabs, whole-pattern random coins/rewards, boundary disposal, repeat weighting, theme boundaries, motion and 1,000-row streaming.");
+            Debug.Log("[MapPatternRegressionChecks] PASS: invalid tiles/overlaps/blocked rows rejected, row-one start, six resources, three live prefabs, authored centred score UI, whole-pattern random coins/rewards, boundary disposal, repeat weighting, preloaded theme transitions without replacement, motion and 1,000-row streaming.");
             EditorApplication.Exit(0);
         }
         catch (Exception exception) { Debug.LogException(exception); EditorApplication.Exit(1); }
@@ -247,6 +247,17 @@ public static class MapPatternRegressionChecks
             map.GetComponentsInChildren<Tilemap>(true).Length == 0,
             "Map does not need authored Ground, Structures or Coins children.");
         Require(map.GetWorldPosition(Vector2Int.zero) == Vector3.zero, "The map preserves gameplay grid coordinates.");
+        var hud = UnityEngine.Object.FindFirstObjectByType<GameplayHud>();
+        Require(hud != null, "Gameplay HUD is authored in the scene, not created at runtime.");
+        var panel = (GameObject)Field(hud, "_deathPanel");
+        var label = (UnityEngine.UI.Text)Field(hud, "_deathScore");
+        var scaler = hud.GetComponent<UnityEngine.UI.CanvasScaler>();
+        Require(panel != null && !panel.activeSelf && label != null && label.font != null &&
+            label.rectTransform.anchorMin == new Vector2(.5f, .5f) &&
+            label.rectTransform.anchorMax == new Vector2(.5f, .5f) &&
+            label.rectTransform.anchoredPosition == Vector2.zero &&
+            scaler.referenceResolution == new Vector2(1080, 1920),
+            "The saved final-score label is centred in a 1080x1920 HUD and hidden until death.");
     }
 
     private static void CheckRepeatedPatterns()
@@ -292,36 +303,54 @@ public static class MapPatternRegressionChecks
 
     private static void CheckThemeBoundary()
     {
-        var map = StartMap(23);
-        var player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
-        var first = ((IList)Field(map, "_placedPatterns"))[0];
-        int boundary = (int)first.GetType().GetProperty("LastRow").GetValue(first) + 1;
+        EditorSceneManager.OpenScene("Assets/Scenes/GameplayScene.unity");
+        var map = UnityEngine.Object.FindFirstObjectByType<MapManager>();
+        var meadow = MapPatternEditor.CreatePattern("Planned Meadow", MapPattern.MinimumLength, "meadow", false);
+        var volcano = MapPatternEditor.CreatePattern("Planned Volcano", MapPattern.MinimumLength, "volcano", false);
+        meadow.transform.SetParent(map.transform, false);
+        volcano.transform.SetParent(map.transform, false);
+        meadow.gameObject.SetActive(false);
+        volcano.gameObject.SetActive(false);
+        Set(meadow, "_rowTriggers", new[] { new RowTriggerDefinition { id = "theme", row = meadow.Length - 2, nextThemeId = "volcano" } });
+        Set(map, "_patterns", new[] { meadow, volcano });
+        Set(map, "_initialThemeId", "meadow");
+        Set(map, "_coinSeed", 23);
+        Set(map, "_coinChance", 0f);
+        Set(map, "_rewardChance", 0f);
+        var state = UnityEngine.Object.FindFirstObjectByType<GameStateManager>();
+        typeof(GameStateManager).GetProperty("Instance").SetValue(null, state);
+        var gameplay = UnityEngine.Object.FindFirstObjectByType<GameplayController>();
+        Set(gameplay, "_moveAchievementIds", Array.Empty<string>());
+        Invoke(gameplay, "Start");
+        var player = gameplay.Player;
+        var placements = (IList)Field(map, "_placedPatterns");
+        var oldView = (MapPattern)Field(placements[0], "View");
+        var nextView = (MapPattern)Field(placements[1], "View");
+        var futureView = (MapPattern)Field(placements[2], "View");
+        Require(player.Position == new Vector2Int(0, 1) && placements.Count == 3 &&
+            nextView.ThemeId == "volcano" && futureView.ThemeId == "volcano" && map.CurrentThemeId == "meadow",
+            "The changed-theme future patterns are already loaded before the player approaches a boundary.");
         int changes = 0;
         map.ThemeChanged += _ => changes++;
-        var oldView = (MapPattern)Field(first, "View");
-        var nextTemplate = Field(((IList)Field(map, "_placedPatterns"))[1], "Template");
-        map.RequestThemeChange("volcano");
-        var placements = (IList)Field(map, "_placedPatterns");
-        Require((int)Field(placements[1], "FirstRow") == boundary &&
-            ((MapPattern)Field(placements[0], "Template")).ThemeId == "meadow" &&
-            ReferenceEquals(Field(placements[1], "Template"), nextTemplate) && map.CurrentThemeId == "meadow" && changes == 0,
-            "A pending theme leaves all three prefabs unchanged until the boundary.");
-        while (player.FurthestRow < boundary)
-        {
-            var target = SafeTarget(map, player.FurthestRow + 1);
-            MoveTo(map, player, target);
-        }
-        Require(map.CurrentThemeId == "volcano" && changes == 1, "Theme becomes active only when the player reaches the new pattern.");
-        Require(oldView != null && (int)Field(placements[1], "FirstRow") == boundary && placements.Count == 3,
-            "One previous prefab is retained with the new current and next patterns at a theme boundary.");
-        CheckPatternRendering(map, player);
+        while (player.FurthestRow < meadow.Length) Require(player.TryMove(Vector2Int.up), "Reach the preloaded theme.");
+        Require(map.CurrentThemeId == "volcano" && changes == 1 && oldView != null &&
+            ReferenceEquals(Field(placements[1], "View"), nextView) &&
+            ReferenceEquals(Field(placements[2], "View"), futureView),
+            "Crossing the boundary updates the active theme but never replaces preloaded prefabs.");
         Require(player.TryMove(Vector2Int.down) && player.TryMove(Vector2Int.up) && changes == 1,
-            "Backtracking over a theme boundary does not toggle the theme or replay its event.");
-        var before = placements[0];
+            "Backtracking does not replay the theme event.");
+        map.RequestThemeChange("meadow");
+        Require(ReferenceEquals(Field(placements[2], "View"), futureView), "An explicit theme request preserves future instances.");
+        while (player.FurthestRow < meadow.Length + volcano.Length)
+            Require(player.TryMove(Vector2Int.up), "Reach the next streaming boundary.");
+        Require(oldView == null && placements.Count == 3 &&
+            ReferenceEquals(Field(placements[0], "View"), nextView) &&
+            ReferenceEquals(Field(placements[1], "View"), futureView) &&
+            ((MapPattern)Field(placements[2], "View")).ThemeId == "meadow" && changes == 1,
+            "Only the newly appended pattern uses the explicit requested theme.");
         bool rejected = false;
-        try { map.RequestThemeChange("missing"); }
-        catch (ArgumentException) { rejected = true; }
-        Require(rejected && ReferenceEquals(before, placements[0]), "Unknown themes are rejected before changing the map.");
+        try { map.RequestThemeChange("missing"); } catch (ArgumentException) { rejected = true; }
+        Require(rejected && placements.Count == 3, "An unknown theme leaves existing patterns intact.");
     }
 
     private static void CheckRewardCollection()
@@ -352,9 +381,8 @@ public static class MapPatternRegressionChecks
             {
                 var target = SafeTarget(map, row);
                 MoveTo(map, player, target);
-                Invoke(map, "AdvanceMovingObstacles", row * 2f);
                 Require((bool)Invoke(map, "HasValidRoutes") && GameStateManager.Instance.State == GameState.Playing,
-                    "Patterns, theme transitions and moving obstacles preserve all collectible routes.");
+                    "Patterns and preloaded theme transitions preserve all collectible routes.");
                 CheckPatternRendering(map, player);
             }
         }

@@ -9,7 +9,7 @@ namespace CrossTheBoard
     public sealed class PlayerController : MonoBehaviour
     {
         public const int MaxBackwardSteps = 1;
-        [SerializeField] private Vector2Int _startPosition = new(0, 0);
+        [SerializeField] private Vector2Int _startPosition = new(0, 1);
         [SerializeField] private SpriteRenderer _appearance;
         [SerializeField, Range(0.01f, 0.25f)] private float _swipeThreshold = 0.04f;
         [SerializeField, Min(1)] private int _maxHealth = 3;

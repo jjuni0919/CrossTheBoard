@@ -13,9 +13,12 @@ namespace CrossTheBoard
         public const int RowsBehind = 1;
         public const int VisibleRows = RowsAhead + RowsBehind + 1;
         public const int HalfWidth = Width / 2;
+        public const int MonsterDespawnDistance = 8;
+        private const int MaximumRenderedPatterns = 3;
 
         [SerializeField] private Tilemap _ground;
         [SerializeField] private Tilemap _structures;
+        [SerializeField] private Tilemap _coinLayer;
         [SerializeField] private TileBase _groundTile;
         [SerializeField] private PlayerController _player;
         [SerializeField] private string _patternResourcesPath = "MapPatterns";
@@ -36,6 +39,9 @@ namespace CrossTheBoard
         public IReadOnlyDictionary<Vector2Int, int> Coins => _coins;
         public IReadOnlyDictionary<Vector2Int, int> Rewards => _rewards;
         private int _firstRow;
+        private int _lastRow;
+        private int _contentFirstRow;
+        private int _currentPatternFirstRow;
         private bool _loaded;
         private readonly Dictionary<Vector2Int, int> _coins = new();
         private readonly Dictionary<Vector2Int, int> _rewards = new();
@@ -48,7 +54,6 @@ namespace CrossTheBoard
         private readonly HashSet<int> _reachedRows = new();
         private readonly Dictionary<int, HashSet<int>> _steppingStones = new();
         private static readonly Vector2Int[] Directions = { Vector2Int.up, Vector2Int.left, Vector2Int.right, Vector2Int.down };
-        private Tilemap _coinLayer;
         private Tile _coinTile;
         private Tile _rewardTile;
         private int _runSeed;
@@ -58,7 +63,8 @@ namespace CrossTheBoard
         private System.Random _patternRandom;
         private MapPattern _previousPattern;
         private string _generationThemeId;
-        private int _nextPatternRow = 1;
+        private string _pendingThemeId;
+        private int _nextPatternRow;
         private int _regenerateFromRow = int.MaxValue;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
@@ -75,6 +81,8 @@ namespace CrossTheBoard
                 throw new InvalidOperationException("MapManager requires ground, structures, a ground tile and a player.");
             Instance = this;
         }
+
+        private void Start() => LoadRows(_player.FurthestRow);
 
         public bool CanMoveTo(Vector2Int position)
         {
@@ -122,62 +130,112 @@ namespace CrossTheBoard
         public void LoadRows(int playerRow)
         {
             EnsureContentInitialized();
-            int firstRow = playerRow - RowsBehind;
-            if (_loaded && firstRow == _firstRow && _regenerateFromRow == int.MaxValue)
-                return;
-            EnsurePatternsThrough(firstRow + VisibleRows);
+            while (_placedPatterns.Count < MaximumRenderedPatterns)
+                EnsurePatternsThrough(_nextPatternRow);
+            UpdateChasers();
+            while (playerRow > GetPattern(_currentPatternFirstRow).LastRow)
+            {
+                var current = GetPattern(_currentPatternFirstRow);
+                int boundary = checked(current.LastRow + 1);
+                while (_placedPatterns[0].FirstRow < current.FirstRow) RemovePattern(0);
+                if (_pendingThemeId != null)
+                {
+                    _generationThemeId = _pendingThemeId;
+                    _pendingThemeId = null;
+                    _previousPattern = current.Template;
+                    for (int i = _placedPatterns.Count - 1; i > 0; i--) RemovePattern(i);
+                    _nextPatternRow = boundary;
+                    _highestGeneratedRow = boundary - 1;
+                    _regenerateFromRow = boundary;
+                }
+                _currentPatternFirstRow = boundary;
+                while (_placedPatterns.Count < MaximumRenderedPatterns)
+                    EnsurePatternsThrough(_nextPatternRow);
+            }
+            int firstRow = _placedPatterns[0].FirstRow;
+            int contentFirstRow = Math.Max(0, playerRow - RowsBehind);
+            int lastRow = _placedPatterns[_placedPatterns.Count - 1].LastRow;
+            if (_loaded && firstRow == _firstRow && contentFirstRow == _contentFirstRow &&
+                lastRow == _lastRow && _regenerateFromRow == int.MaxValue) return;
             if (!_loaded)
+            {
                 _ground.ClearAllTiles();
+                _structures.ClearAllTiles();
+            }
             else
             {
-                for (int row = _firstRow; row < _firstRow + VisibleRows; row++)
+                for (int row = _firstRow; row <= _lastRow; row++)
                 {
-                    if (row < firstRow || row >= firstRow + VisibleRows)
+                    if (row < firstRow || row > lastRow || row >= _regenerateFromRow)
                         SetGroundRow(row, null);
                 }
             }
-            for (int row = firstRow; row < firstRow + VisibleRows; row++)
+            for (int row = firstRow; row <= lastRow; row++)
             {
-                if (!_loaded || row < _firstRow || row >= _firstRow + VisibleRows || row >= _regenerateFromRow)
+                if (!_loaded || row < _firstRow || row > _lastRow || row >= _regenerateFromRow)
                     SetGroundRow(row, _groundTile);
             }
             _firstRow = firstRow;
+            _contentFirstRow = contentFirstRow;
+            _lastRow = lastRow;
             _loaded = true;
             _ground.CompressBounds();
             var expiredCoins = new List<Vector2Int>();
             foreach (var coin in _coins)
-                if (coin.Key.y < firstRow || coin.Key.y >= firstRow + VisibleRows)
+                if (coin.Key.y < contentFirstRow || coin.Key.y > lastRow || coin.Key.y >= _regenerateFromRow)
                     expiredCoins.Add(coin.Key);
             foreach (var position in expiredCoins)
                 RemoveCoin(position);
             var expiredRewards = new List<Vector2Int>();
             foreach (var reward in _rewards)
-                if (reward.Key.y < firstRow || reward.Key.y >= firstRow + VisibleRows) expiredRewards.Add(reward.Key);
+                if (reward.Key.y < contentFirstRow || reward.Key.y > lastRow || reward.Key.y >= _regenerateFromRow) expiredRewards.Add(reward.Key);
             foreach (var position in expiredRewards) RemoveReward(position);
-            _movingObstacles.RemoveAll(obstacle => obstacle.Position.y < firstRow);
+            foreach (var obstacle in _movingObstacles)
+                if (obstacle.Position.y < firstRow || obstacle.Position.y >= _regenerateFromRow)
+                    SetStructureTile((Vector3Int)obstacle.Position, null);
+            _movingObstacles.RemoveAll(obstacle => obstacle.Position.y < firstRow || obstacle.Position.y >= _regenerateFromRow);
             foreach (var pattern in _placedPatterns)
                 foreach (var definition in pattern.Template.MovingObstacles)
                 {
                     var position = definition.position + new Vector2Int(0, pattern.FirstRow);
-                    if (position.y <= _highestGeneratedRow || position.y < firstRow || position.y >= firstRow + VisibleRows) continue;
+                    if (position.y <= _highestGeneratedRow || position.y < firstRow || position.y > lastRow) continue;
                     var cell = (Vector3Int)position;
                     if (!CanStandOn(position) || _structures.HasTile(cell) || position == _player.Position)
                         throw new InvalidOperationException($"Moving obstacle in '{pattern.Template.name}' could not be placed at {position}.");
-                    _structures.SetTile(cell, definition.tile);
+                    SetStructureTile(cell, definition.tile);
                     _movingObstacles.Add(new MovingObstacle { Definition = definition, Origin = position, Position = position,
                         NextMoveTime = Time.time + definition.stepInterval });
                 }
+            UpdateChasers();
             if (!HasValidRoutes())
                 throw new InvalidOperationException("The configured map has an unreachable trigger or no safe forward route.");
-            for (int row = firstRow; row < firstRow + VisibleRows; row++)
+            var reachable = GetReachableCells();
+            for (int row = firstRow; row <= lastRow; row++)
             {
                 if (row > _highestGeneratedRow)
-                    GenerateRowContent(row);
+                    GenerateRowContent(row, reachable);
             }
             _regenerateFromRow = int.MaxValue;
-            for (int i = _placedPatterns.Count - 1; i >= 0; i--)
-                if (_placedPatterns[i].LastRow < firstRow) RemovePattern(i);
+            _structures.CompressBounds();
+            _coinLayer.CompressBounds();
+            UpdatePatternViews();
             _reachedRows.RemoveWhere(row => row < firstRow);
+            var expiredCells = new List<Vector2Int>();
+            foreach (var trigger in _registeredCells.Values)
+                if (trigger.position.y < firstRow) expiredCells.Add(trigger.position);
+            foreach (var position in expiredCells)
+            {
+                _firedCellTriggers.Remove(_registeredCells[position].id);
+                _registeredCells.Remove(position);
+            }
+            var expiredRows = new List<string>();
+            foreach (var trigger in _registeredRows.Values)
+                if (trigger.row < firstRow) expiredRows.Add(trigger.id);
+            foreach (var id in expiredRows)
+            {
+                _firedRowTriggers.Remove(id);
+                _registeredRows.Remove(id);
+            }
         }
 
         private void EnsureContentInitialized()
@@ -225,20 +283,24 @@ namespace CrossTheBoard
             foreach (var definition in _rowTriggers)
                 if (!TryRegisterRowTrigger(definition))
                     throw new InvalidOperationException($"Row trigger '{definition.id}' is duplicated.");
-            var layer = new GameObject("Coins", typeof(Tilemap), typeof(TilemapRenderer));
-            layer.transform.SetParent(_ground.transform.parent, false);
-            layer.transform.localPosition = _ground.transform.localPosition;
-            layer.transform.localRotation = _ground.transform.localRotation;
-            layer.transform.localScale = _ground.transform.localScale;
-            _coinLayer = layer.GetComponent<Tilemap>();
+            if (_coinLayer == null)
+            {
+                var layer = new GameObject("Coins", typeof(Tilemap), typeof(TilemapRenderer));
+                layer.transform.SetParent(transform, false);
+                _coinLayer = layer.GetComponent<Tilemap>();
+            }
+            _coinLayer.transform.localPosition = _ground.transform.localPosition;
+            _coinLayer.transform.localRotation = _ground.transform.localRotation;
+            _coinLayer.transform.localScale = _ground.transform.localScale;
+            _coinLayer.ClearAllTiles();
             _coinLayer.tileAnchor = _ground.tileAnchor;
-            var renderer = layer.GetComponent<TilemapRenderer>();
+            var renderer = _coinLayer.GetComponent<TilemapRenderer>();
             var groundRenderer = _ground.GetComponent<TilemapRenderer>();
             if (groundRenderer != null)
             {
                 renderer.sharedMaterial = groundRenderer.sharedMaterial;
                 renderer.sortingLayerID = groundRenderer.sortingLayerID;
-                renderer.sortingOrder = groundRenderer.sortingOrder + 1;
+                renderer.sortingOrder = Mathf.Max(groundRenderer.sortingOrder, _structures.GetComponent<TilemapRenderer>().sortingOrder) + 1;
             }
             _coinTile = ScriptableObject.CreateInstance<Tile>();
             _coinTile.name = "Coin Tile";
@@ -253,13 +315,11 @@ namespace CrossTheBoard
             _contentInitialized = true;
         }
 
-        private void GenerateRowContent(int row)
+        private void GenerateRowContent(int row, HashSet<Vector2Int> reachable)
         {
             _highestGeneratedRow = row;
-            // Keep the starting row and the single row behind it clear.
-            if (row <= 0) return;
+            if (row <= 1) return;
             var random = new System.Random(unchecked(_runSeed * 397 ^ row));
-            var reachable = GetReachableCells();
             for (int x = -HalfWidth; x <= HalfWidth; x++)
             {
                 var position = new Vector2Int(x, row);
@@ -319,10 +379,10 @@ namespace CrossTheBoard
                 return false;
             var cell = new Vector3Int(position.x, position.y, 0);
             if (_structures.HasTile(cell)) return false;
-            _structures.SetTile(cell, tile);
+            SetStructureTile(cell, tile);
             if (!HasValidRoutes())
             {
-                _structures.SetTile(cell, null);
+                SetStructureTile(cell, null);
                 return false;
             }
             return true;
@@ -334,9 +394,10 @@ namespace CrossTheBoard
             if (moving != null)
             {
                 if (!_loaded || (to - from).sqrMagnitude != 1 || !CanStandOn(to) ||
+                    moving.Definition.movement == ObstacleMovement.Chase && _steppingStones.ContainsKey(to.y) ||
                     _structures.HasTile((Vector3Int)to)) return false;
-                _structures.SetTile((Vector3Int)from, null);
-                _structures.SetTile((Vector3Int)to, moving.Definition.tile);
+                SetStructureTile((Vector3Int)from, null);
+                SetStructureTile((Vector3Int)to, moving.Definition.tile);
                 moving.Position = to;
                 DamagePlayerAt(to);
                 return true;
@@ -347,11 +408,11 @@ namespace CrossTheBoard
             var destination = new Vector3Int(to.x, to.y, 0);
             var tile = _structures.GetTile(source);
             if (tile == null || !_ground.HasTile(source)) return false;
-            _structures.SetTile(source, null);
-            _structures.SetTile(destination, tile);
+            SetStructureTile(source, null);
+            SetStructureTile(destination, tile);
             if (HasValidRoutes()) return true;
-            _structures.SetTile(destination, null);
-            _structures.SetTile(source, tile);
+            SetStructureTile(destination, null);
+            SetStructureTile(source, tile);
             return false;
         }
 
@@ -375,33 +436,46 @@ namespace CrossTheBoard
             var pattern = GetPattern(from.y);
             _ground.SetColor(new Vector3Int(from.x, from.y, 0), pattern.Template.LavaColor);
             _ground.SetColor(new Vector3Int(to.x, to.y, 0), pattern.Template.SteppingStoneColor);
+            SyncPatternCell((Vector3Int)from);
+            SyncPatternCell((Vector3Int)to);
             return true;
         }
 
         public bool TryGetNextStep(Vector2Int from, Vector2Int target, out Vector2Int next)
         {
             next = from;
+            var moving = GetMovingObstacle(from);
+            // Player paths still cross stepping stones when a monster shares the player's cell.
+            bool playerPath = from == _player.Position;
+            bool movingObstacle = moving != null && !playerPath;
+            bool chaser = movingObstacle && moving.Definition.movement == ObstacleMovement.Chase;
             if (!_loaded || from == target || !CanStandOn(target) ||
+                chaser && (_steppingStones.ContainsKey(from.y) || _steppingStones.ContainsKey(target.y)) ||
                 !_ground.HasTile(new Vector3Int(from.x, from.y, 0)) || IsLethal(from)) return false;
-            var queue = new Queue<Vector2Int>();
-            var parents = new Dictionary<Vector2Int, Vector2Int> { [from] = from };
-            queue.Enqueue(from);
+            var start = new Vector3Int(from.x, from.y, playerPath ? _player.FurthestRow : 0);
+            var queue = new Queue<Vector3Int>();
+            var parents = new Dictionary<Vector3Int, Vector3Int> { [start] = start };
+            queue.Enqueue(start);
             while (queue.Count > 0)
             {
-                var position = queue.Dequeue();
+                var state = queue.Dequeue();
+                var position = new Vector2Int(state.x, state.y);
                 foreach (var direction in Directions)
                 {
                     var destination = position + direction;
-                    if (!CanStandOn(destination) || parents.ContainsKey(destination) ||
-                        destination != target && GetMovingObstacle(destination) != null) continue;
-                    parents.Add(destination, position);
+                    if (!CanStandOn(destination) || playerPath && destination.y < state.z - PlayerController.MaxBackwardSteps ||
+                        chaser && _steppingStones.ContainsKey(destination.y) ||
+                        movingObstacle && destination != target && GetMovingObstacle(destination) != null) continue;
+                    var nextState = new Vector3Int(destination.x, destination.y, playerPath ? Math.Max(state.z, destination.y) : 0);
+                    if (parents.ContainsKey(nextState)) continue;
+                    parents.Add(nextState, state);
                     if (destination == target)
                     {
-                        next = target;
-                        while (parents[next] != from) next = parents[next];
+                        while (parents[nextState] != start) nextState = parents[nextState];
+                        next = new Vector2Int(nextState.x, nextState.y);
                         return true;
                     }
-                    queue.Enqueue(destination);
+                    queue.Enqueue(nextState);
                 }
             }
             return false;
@@ -481,6 +555,7 @@ namespace CrossTheBoard
                 if (tile == null)
                 {
                     _structures.SetTile(cell, null);
+                    SyncPatternCell(cell);
                     continue;
                 }
                 _ground.SetTileFlags(cell, TileFlags.None);
@@ -495,7 +570,81 @@ namespace CrossTheBoard
                     _structures.SetColor(cell, pattern.Template.Structures.GetColor(local) * pattern.Template.Structures.color);
                     _structures.SetTransformMatrix(cell, pattern.Template.Structures.GetTransformMatrix(local));
                 }
+                SyncPatternCell(cell);
             }
+        }
+
+        private void UpdatePatternViews()
+        {
+            for (int i = 0; i < _placedPatterns.Count; i++)
+            {
+                var pattern = _placedPatterns[i];
+                if (i >= MaximumRenderedPatterns)
+                {
+                    ReleasePatternView(pattern);
+                    continue;
+                }
+                if (pattern.View != null) continue;
+                var view = Instantiate(pattern.Template, transform);
+                pattern.View = view;
+                view.name = $"Pattern {pattern.FirstRow} - {pattern.Template.name}";
+                view.transform.localPosition = _ground.transform.localPosition + new Vector3(0, pattern.FirstRow, 0);
+                view.gameObject.SetActive(true);
+                view.Ground.GetComponent<TilemapRenderer>().sharedMaterial = _ground.GetComponent<TilemapRenderer>().sharedMaterial;
+                view.Structures.GetComponent<TilemapRenderer>().sharedMaterial = _structures.GetComponent<TilemapRenderer>().sharedMaterial;
+                view.Ground.color = view.Structures.color = Color.white;
+                for (int row = 0; row < pattern.Template.Length; row++)
+                    for (int x = -HalfWidth; x <= HalfWidth; x++)
+                    {
+                        var local = new Vector3Int(x, row, 0);
+                        int worldRow = pattern.FirstRow + row;
+                        view.Ground.SetTileFlags(local, TileFlags.None);
+                        view.Ground.SetColor(local, _steppingStones.ContainsKey(worldRow)
+                            ? (IsLethal(new Vector2Int(x, worldRow)) ? pattern.Template.LavaColor : pattern.Template.SteppingStoneColor)
+                            : pattern.Template.Ground.GetColor(local) * pattern.Template.Ground.color);
+                        if (!view.Structures.HasTile(local)) continue;
+                        view.Structures.SetTileFlags(local, TileFlags.None);
+                        view.Structures.SetColor(local, pattern.Template.Structures.GetColor(local) * pattern.Template.Structures.color);
+                    }
+            }
+            // The shared grid is gameplay data; drawing it would duplicate the pattern prefabs.
+            _ground.GetComponent<TilemapRenderer>().enabled = false;
+            _structures.GetComponent<TilemapRenderer>().enabled = false;
+            for (int row = _firstRow; row <= _lastRow; row++)
+                for (int x = -HalfWidth; x <= HalfWidth; x++) SyncPatternCell(new Vector3Int(x, row, 0));
+        }
+
+        private void SyncPatternCell(Vector3Int cell)
+        {
+            var pattern = GetPattern(cell.y);
+            if (pattern?.View == null) return;
+            var local = new Vector3Int(cell.x, cell.y - pattern.FirstRow, cell.z);
+            var view = pattern.View;
+            view.Ground.SetTile(local, _ground.GetTile(cell));
+            view.Ground.SetTileFlags(local, TileFlags.None);
+            view.Ground.SetColor(local, _ground.GetColor(cell) * _ground.color);
+            view.Ground.SetTransformMatrix(local, _ground.GetTransformMatrix(cell));
+            view.Structures.SetTile(local, _structures.GetTile(cell));
+            view.Structures.SetTileFlags(local, TileFlags.None);
+            view.Structures.SetColor(local, _structures.GetColor(cell) * _structures.color);
+            view.Structures.SetTransformMatrix(local, _structures.GetTransformMatrix(cell));
+        }
+
+        private void SetStructureTile(Vector3Int cell, TileBase tile)
+        {
+            _structures.SetTile(cell, tile);
+            SyncPatternCell(cell);
+        }
+
+        private static void ReleasePatternView(PlacedPattern pattern)
+        {
+            if (pattern.View == null) return;
+            var instance = pattern.View.gameObject;
+            // Destroy is deferred until frame end, so hide this before creating the next pattern.
+            instance.SetActive(false);
+            if (Application.isPlaying) Destroy(instance);
+            else DestroyImmediate(instance);
+            pattern.View = null;
         }
 
         private HashSet<Vector2Int> GetReachableCells()
@@ -527,7 +676,7 @@ namespace CrossTheBoard
         {
             if (!_loaded || !CanMoveTo(_player.Position) || IsLethal(_player.Position) ||
                 !_ground.HasTile((Vector3Int)_player.Position)) return false;
-            int lastRow = _firstRow + VisibleRows - 1;
+            int lastRow = _lastRow;
             // Adjacent rows stay connected so advancing cannot strand a collectible
             // behind a wall that would require two backward steps to go around.
             // Include the next row before it appears, since it may be a configured hazard.
@@ -539,7 +688,7 @@ namespace CrossTheBoard
             foreach (var reward in _rewards)
                 if (!reachable.Contains(reward.Key)) return false;
             foreach (var trigger in _registeredCells.Values)
-                if (trigger.position.y >= _firstRow && trigger.position.y <= lastRow && !reachable.Contains(trigger.position)) return false;
+                if (trigger.position.y >= _contentFirstRow && trigger.position.y <= lastRow && !reachable.Contains(trigger.position)) return false;
             return true;
         }
 
@@ -591,9 +740,19 @@ namespace CrossTheBoard
                 foreach (var pattern in _patterns)
                 {
                     if (pattern.ThemeId != _generationThemeId) continue;
+                    if (_nextPatternRow == 0)
+                    {
+                        var start = new Vector2Int(0, 1);
+                        bool lethal = false;
+                        foreach (var lava in pattern.LavaRows)
+                            if (lava.row == start.y && Array.IndexOf(lava.steppingStoneColumns, start.x) < 0) lethal = true;
+                        if (pattern.GetObstacle(start) != null || lethal) continue;
+                    }
                     candidates.Add(pattern);
                     weight += pattern == _previousPattern ? _repeatWeight : 1f;
                 }
+                if (candidates.Count == 0)
+                    throw new InvalidOperationException($"No pattern in theme '{_generationThemeId}' has a safe starting cell at (0, 1).");
                 MapPattern selected = candidates[0];
                 if (weight > 0f)
                 {
@@ -632,33 +791,21 @@ namespace CrossTheBoard
             EnsureContentInitialized();
             if (string.IsNullOrWhiteSpace(themeId) || !Array.Exists(_patterns, pattern => pattern.ThemeId == themeId))
                 throw new ArgumentException($"No patterns for theme '{themeId}'.", nameof(themeId));
-            var current = GetPattern(Math.Max(1, _player.FurthestRow));
-            int boundary = current != null ? checked(current.LastRow + 1) : 1;
-            var next = GetPattern(boundary);
-            if (next?.Template.ThemeId == themeId && _generationThemeId == themeId) return;
-            // Lookahead may already contain the next pattern. Replace only unvisited rows past the current boundary.
-            for (int i = _placedPatterns.Count - 1; i >= 0; i--)
-                if (_placedPatterns[i].FirstRow >= boundary) RemovePattern(i);
-            var coins = new List<Vector2Int>(_coins.Keys);
-            foreach (var position in coins) if (position.y >= boundary) RemoveCoin(position);
-            var rewards = new List<Vector2Int>(_rewards.Keys);
-            foreach (var position in rewards) if (position.y >= boundary) RemoveReward(position);
-            foreach (var obstacle in _movingObstacles)
-                if (obstacle.Origin.y >= boundary || obstacle.Position.y >= boundary)
-                    _structures.SetTile((Vector3Int)obstacle.Position, null);
-            _movingObstacles.RemoveAll(obstacle => obstacle.Origin.y >= boundary || obstacle.Position.y >= boundary);
-            for (int row = boundary; _loaded && row < _firstRow + VisibleRows; row++) SetGroundRow(row, null);
-            _generationThemeId = themeId;
-            _previousPattern = current?.Template;
-            _nextPatternRow = boundary;
-            _highestGeneratedRow = Math.Min(_highestGeneratedRow, boundary - 1);
-            _regenerateFromRow = boundary;
-            if (_loaded) LoadRows(_player.FurthestRow);
+            _pendingThemeId = themeId == _generationThemeId ? null : themeId;
         }
 
         private void RemovePattern(int index)
         {
             var pattern = _placedPatterns[index];
+            ReleasePatternView(pattern);
+            bool RemoveWithPattern(MovingObstacle obstacle) =>
+                obstacle.Origin.y >= pattern.FirstRow && obstacle.Origin.y <= pattern.LastRow &&
+                (obstacle.Definition.movement != ObstacleMovement.Chase || !obstacle.HasStartedChasing ||
+                    pattern.FirstRow > _currentPatternFirstRow);
+            foreach (var obstacle in _movingObstacles)
+                if (RemoveWithPattern(obstacle))
+                    SetStructureTile((Vector3Int)obstacle.Position, null);
+            _movingObstacles.RemoveAll(RemoveWithPattern);
             foreach (var lava in pattern.Template.LavaRows) _steppingStones.Remove(pattern.FirstRow + lava.row);
             foreach (string id in pattern.TriggerIds)
             {
@@ -670,7 +817,8 @@ namespace CrossTheBoard
 
         private void Update()
         {
-            if (!_loaded || GameStateManager.Instance == null || GameStateManager.Instance.State != GameState.Playing) return;
+            if (GameStateManager.Instance == null || GameStateManager.Instance.State != GameState.Playing) return;
+            LoadRows(_player.FurthestRow);
             DamagePlayerAt(_player.Position);
             if (GameStateManager.Instance.State != GameState.Playing) return;
             AdvanceMovingObstacles(Time.time);
@@ -678,6 +826,7 @@ namespace CrossTheBoard
 
         private void AdvanceMovingObstacles(float now)
         {
+            UpdateChasers();
             foreach (var obstacle in _movingObstacles)
             {
                 if (GameStateManager.Instance.State != GameState.Playing) return;
@@ -687,6 +836,7 @@ namespace CrossTheBoard
                 Vector2Int next;
                 if (definition.movement == ObstacleMovement.Chase)
                 {
+                    if (!obstacle.HasStartedChasing) continue;
                     if (!TryGetNextStep(obstacle.Position, _player.Position, out next)) continue;
                 }
                 else
@@ -702,11 +852,29 @@ namespace CrossTheBoard
             }
         }
 
+        private void UpdateChasers()
+        {
+            for (int i = _movingObstacles.Count - 1; i >= 0; i--)
+            {
+                var obstacle = _movingObstacles[i];
+                if (obstacle.Definition.movement != ObstacleMovement.Chase) continue;
+                long distance = Math.Abs((long)obstacle.Position.x - _player.Position.x) +
+                    Math.Abs((long)obstacle.Position.y - _player.Position.y);
+                if (distance < MonsterDespawnDistance) obstacle.HasStartedChasing = true;
+                else if (obstacle.HasStartedChasing)
+                {
+                    SetStructureTile((Vector3Int)obstacle.Position, null);
+                    _movingObstacles.RemoveAt(i);
+                }
+            }
+        }
+
         private sealed class PlacedPattern
         {
             public MapPattern Template;
+            public MapPattern View;
             public int FirstRow;
-            public int LastRow => FirstRow + Template.Length - 1;
+            public int LastRow => checked(FirstRow + Template.Length - 1);
             public readonly List<string> TriggerIds = new();
         }
 
@@ -717,10 +885,12 @@ namespace CrossTheBoard
             public Vector2Int Position;
             public int Direction = 1;
             public float NextMoveTime;
+            public bool HasStartedChasing;
         }
 
         private void OnDestroy()
         {
+            foreach (var pattern in _placedPatterns) ReleasePatternView(pattern);
             if (_rewardTile != null)
             {
                 if (Application.isPlaying) Destroy(_rewardTile);

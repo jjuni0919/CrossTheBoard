@@ -47,7 +47,7 @@ public sealed class MapPatternEditor : Editor
     public static MapPattern CreatePattern(string name, int length, string themeId)
     {
         if (length < MapPattern.MinimumLength || length > MapPattern.MaximumLength || string.IsNullOrWhiteSpace(themeId))
-            throw new ArgumentException("A pattern requires a theme and a length of 6–30 rows.");
+            throw new ArgumentException($"A pattern requires a theme and a length of {MapPattern.MinimumLength}–{MapPattern.MaximumLength} rows.");
         var root = new GameObject(name, typeof(Grid), typeof(MapPattern));
         var pattern = root.GetComponent<MapPattern>();
         var ground = new GameObject("Ground", typeof(Tilemap), typeof(TilemapRenderer));
@@ -68,7 +68,7 @@ public sealed class MapPatternEditor : Editor
     private static void ResizeGround(MapPattern pattern)
     {
         if (pattern.Length < MapPattern.MinimumLength || pattern.Length > MapPattern.MaximumLength || pattern.Ground == null)
-            throw new InvalidOperationException("Pattern ground and a length of 6–30 rows are required.");
+            throw new InvalidOperationException($"Pattern ground and a length of {MapPattern.MinimumLength}–{MapPattern.MaximumLength} rows are required.");
         var tile = AssetDatabase.LoadAssetAtPath<TileBase>("Assets/Gameplay/GroundTile.asset");
         if (tile == null) throw new InvalidOperationException("The default ground tile is missing.");
         foreach (var position in pattern.Ground.cellBounds.allPositionsWithin)

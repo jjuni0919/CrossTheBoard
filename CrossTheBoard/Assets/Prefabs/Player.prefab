@@ -45,7 +45,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d4166cd45947247a7897951d0efa12f4, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CrossTheBoard.PlayerController
-  _startPosition: {x: 0, y: 0}
+  _startPosition: {x: 0, y: 1}
   _appearance: {fileID: 8337025568734830154}
   _swipeThreshold: 0.04
   _maxHealth: 3

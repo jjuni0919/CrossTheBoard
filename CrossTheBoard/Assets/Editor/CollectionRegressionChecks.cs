@@ -25,8 +25,9 @@ public static class CollectionRegressionChecks
             CheckSave(save);
             CheckAchievements(save);
             CheckGameplay(save);
+            CheckDeathSettlement();
             CheckMenu();
-            Debug.Log("[CollectionRegressionChecks] PASS: migration, purchases, rollback, coin placement/collection, occupancy, row/cell events, unlocks, preview/confirmation, selected gameplay character and menu navigation.");
+            Debug.Log("[CollectionRegressionChecks] PASS: migration, purchases, rollback, coin placement/collection, occupancy, row/cell events, unlocks, death settlement/failure, preview/confirmation, selected gameplay character and menu navigation.");
             EditorApplication.Exit(0);
         }
         catch (Exception exception)
@@ -83,6 +84,15 @@ public static class CollectionRegressionChecks
             CharacterCatalog.IsUnlocked(migrated, "robot") && !JsonUtility.ToJson(migrated).Contains("Skin"),
             "Version 2 ignores removed skin fields while preserving wallet and characters.");
         File.Delete(previous);
+        string versionThree = Path.Combine(Application.temporaryCachePath, "collection-v3.json");
+        File.WriteAllText(versionThree, "{\"version\":3,\"coins\":75,\"achievements\":[],\"selectedCharacterId\":\"robot\",\"unlockedCharacterIds\":[\"slime\",\"robot\"],\"bestDistance\":25}");
+        args = new object[] { versionThree, null };
+        loaded = (bool)typeof(SaveManager).GetMethod("TryRead", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(save, args);
+        migrated = (SaveData)args[1];
+        Require(loaded && migrated.version == SaveData.CurrentVersion && migrated.coins == 75 && migrated.bestDistance == 25 &&
+            migrated.lastScore == 0 && migrated.bestScore == 0 && migrated.lastRunCoins == 0,
+            "Version 3 retains existing progress and defaults new run-result fields.");
+        File.Delete(versionThree);
         Property(save, "Data", new SaveData { coins = 80 });
         int events = 0;
         save.DataChanged += () => events++;
@@ -111,6 +121,9 @@ public static class CollectionRegressionChecks
             data => data.achievements = null,
             data => data.unlockedCharacterIds = null,
             data => data.coins = -1,
+            data => data.lastScore = -1,
+            data => data.lastRunCoins = -1,
+            data => data.lastScore = data.bestScore + 1,
             data => data.achievements.AddRange(new[]
             {
                 new AchievementProgress { id = "duplicate" },
@@ -226,17 +239,19 @@ public static class CollectionRegressionChecks
         save.TryUpdate(data => CharacterCatalog.SelectCharacter(data, "robot"));
         Invoke(gameplay, "Start");
         Require(gameplay.ActiveCharacterId == "robot", "Saved character is used next run.");
-        Require(map.Coins.Count == MapManager.Width * MapManager.RowsAhead && map.GetCoinAmount(Vector2Int.zero) == 0, "Deterministic full-density generation skips start/back rows.");
+        Require(player.Position == new Vector2Int(0, 1) && map.Coins.Count == MapManager.Width * (MapPattern.MaximumLength * 3 - 2) &&
+            map.GetCoinAmount(new Vector2Int(0, 1)) == 0 && map.GetCoinAmount(Vector2Int.zero) == 0,
+            "Whole-pattern generation populates all three prefabs and skips the start/back rows.");
         var obstacle = ScriptableObject.CreateInstance<Tile>();
-        var occupied = new Vector2Int(-3, 1);
+        var occupied = new Vector2Int(-3, 2);
         Require(!map.TrySetObstacle(occupied, obstacle), "Obstacle cannot overlap coin.");
         Require(!map.RegisterCellTrigger(new CellTriggerDefinition { id = "occupied", position = occupied }), "Trigger cannot overlap coin.");
         map.RemoveCoin(occupied);
         Require(map.TrySetObstacle(occupied, obstacle) && !map.TryPlaceCoin(occupied), "Coin cannot overlap obstacle.");
-        var triggerPosition = new Vector2Int(0, 2);
+        var triggerPosition = new Vector2Int(0, 3);
         map.RemoveCoin(triggerPosition);
         var cell = new CellTriggerDefinition { id = "cell", position = triggerPosition };
-        var row = new RowTriggerDefinition { id = "row", row = 2 };
+        var row = new RowTriggerDefinition { id = "row", row = 3 };
         int cellEvents = 0, rowEvents = 0;
         cell.onReached.AddListener(() => cellEvents++);
         row.onReached.AddListener(() => rowEvents++);
@@ -245,9 +260,9 @@ public static class CollectionRegressionChecks
         Require(!map.TrySetObstacle(triggerPosition, obstacle), "Obstacle cannot replace trigger.");
         int wallet = save.Data.coins;
         Require(player.TryMove(Vector2Int.up), "Move onto coin.");
-        Require(save.Data.coins == wallet + 1 && gameplay.Score == 110 && gameplay.CollectedCoins == 1 && map.GetCoinAmount(new Vector2Int(0, 1)) == 0,
+        Require(save.Data.coins == wallet + 1 && gameplay.Score == 110 && gameplay.CollectedCoins == 1 && map.GetCoinAmount(new Vector2Int(0, 2)) == 0,
             "Coin collection persists and awards ten bonus points plus new-row score.");
-        var overflowCell = new Vector2Int(1, 1);
+        var overflowCell = new Vector2Int(1, 2);
         var beforeOverflow = save.Data;
         Set(gameplay, "_pointsPerCoin", int.MaxValue);
         bool overflowRejected = false;
@@ -264,7 +279,7 @@ public static class CollectionRegressionChecks
         Require(player.TryMove(Vector2Int.left), "Revisit cell.");
         Require(player.TryMove(Vector2Int.down) && player.TryMove(Vector2Int.up), "Revisit event row.");
         Require(rowEvents == 1 && cellEvents == 1, "Cell and row events default to once per run.");
-        var failureCell = new Vector2Int(0, 3);
+        var failureCell = new Vector2Int(0, 4);
         wallet = save.Data.coins;
         Property(save, "CanSave", false);
         Require(player.TryMove(Vector2Int.up), "Movement remains possible when saving is unavailable.");
@@ -277,7 +292,60 @@ public static class CollectionRegressionChecks
         for (int i = 3; i < 10; i++) Require(player.TryMove(Vector2Int.up), "Advance toward special unlock.");
         Require(CharacterCatalog.IsUnlocked(save.Data, "frog") && save.Data.bestDistance == 10, "Gameplay automatically unlocks distance character.");
         Require(save.Load() && save.Data.bestDistance == 10 && CharacterCatalog.IsUnlocked(save.Data, "frog"), "Run progression and unlock persist.");
+        int finalScore = gameplay.Score;
+        int runCoins = gameplay.CollectedCoins;
+        wallet = save.Data.coins;
+        int totalCoins = save.Data.totalCoinsCollected;
+        GameStateManager.Instance.SetState(GameState.GameOver);
+        Require(save.Data.lastScore == finalScore && save.Data.bestScore >= finalScore && save.Data.lastRunCoins == runCoins &&
+            save.Data.coins == wallet && save.Data.totalCoinsCollected == totalCoins,
+            "Death records final results without paying already-collected coins twice.");
+        var settled = save.Data;
+        Invoke(gameplay, "OnStateChanged", GameState.GameOver);
+        Require(ReferenceEquals(settled, save.Data), "Repeated death notifications do not settle the same run again.");
+        Require(save.Load() && save.Data.lastScore == finalScore && save.Data.lastRunCoins == runCoins && save.Data.coins == wallet,
+            "Final score and run coins survive save reload.");
         UnityEngine.Object.DestroyImmediate(obstacle);
+    }
+
+    private static void CheckDeathSettlement()
+    {
+        foreach (bool canSave in new[] { false, true })
+        {
+            EditorSceneManager.OpenScene("Assets/Scenes/GameplayScene.unity");
+            var save = UnityEngine.Object.FindFirstObjectByType<SaveManager>();
+            Singleton(typeof(SaveManager), save);
+            Require(save.Load(), "Load the last settled run.");
+            Singleton(typeof(GameStateManager), UnityEngine.Object.FindFirstObjectByType<GameStateManager>());
+            var map = UnityEngine.Object.FindFirstObjectByType<MapManager>();
+            GameplayRegressionChecks.ConfigureMap(map, new[] { new HazardRowDefinition { row = 3, steppingStoneColumns = new[] { 0 } } });
+            Set(map, "_coinChance", 0f);
+            var gameplay = UnityEngine.Object.FindFirstObjectByType<GameplayController>();
+            Set(gameplay, "_moveAchievementIds", Array.Empty<string>());
+            Invoke(gameplay, "Start");
+            var player = gameplay.Player;
+            var original = save.Data;
+            int totalForwardCells = original.totalForwardCells;
+            Property(save, "CanSave", false);
+            Require(player.TryMove(Vector2Int.up) && gameplay.Score == 100 && save.Data.totalForwardCells == totalForwardCells,
+                "Unsaved safe progress remains pending during the run.");
+            Property(save, "CanSave", canSave);
+            Require(player.TryMove(Vector2Int.right) && player.TryMove(Vector2Int.up) && GameStateManager.Instance.State == GameState.GameOver,
+                "An unsafe cell ends the run without extra score or coins.");
+            Require(gameplay.Score == 100 && gameplay.CollectedCoins == 0 && save.Data.coins == original.coins,
+                "The fatal forward row grants no points or wallet payment.");
+            if (canSave)
+                Require(save.Data.lastScore == 100 && save.Data.lastRunCoins == 0 && save.Data.totalForwardCells == totalForwardCells + 1,
+                    "Death flushes exactly the pending safe row, not the fatal row.");
+            else
+                Require(ReferenceEquals(original, save.Data), "Failed death settlement preserves all previous save fields.");
+            var settled = save.Data;
+            Invoke(gameplay, "OnStateChanged", GameState.GameOver);
+            Require(ReferenceEquals(settled, save.Data), "Neither failed nor successful death handling repeats its transaction.");
+            Property(save, "CanSave", true);
+            Require(save.Load() && save.Data.lastScore == settled.lastScore && save.Data.totalForwardCells == settled.totalForwardCells,
+                "Settled or preserved data survives disk reload.");
+        }
     }
 
     private static void CheckMenu()
@@ -393,5 +461,5 @@ public static class CollectionRegressionChecks
     private static void Set(object target, string name, object value) => target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).SetValue(target, value);
     private static void Property(object target, string name, object value) => target.GetType().GetProperty(name).SetValue(target, value);
     private static void Singleton(Type type, object value) => type.GetProperty("Instance").SetValue(null, value);
-    private static void Invoke(object target, string name) => target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic).Invoke(target, null);
+    private static void Invoke(object target, string name, params object[] args) => target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic).Invoke(target, args);
 }

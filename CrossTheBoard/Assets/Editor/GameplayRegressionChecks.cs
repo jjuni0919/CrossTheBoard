@@ -38,11 +38,11 @@ public static class GameplayRegressionChecks
             Invoke(camera, "Awake");
             Invoke(camera, "LateUpdate");
             Vector3 startCamera = camera.transform.position;
-            Require(player.Position == Vector2Int.zero && player.FurthestRow == 0, "Start at (0, 0).");
+            Require(player.Position == new Vector2Int(0, 1) && player.FurthestRow == 1, "Start in the centre of row one.");
             Require(gameplay.Score == 0 && events == 1 && lastScore == 0, "Publish initial zero score.");
 
             Require(player.TryMove(Vector2Int.down), "One backward step from the starting frontier is allowed.");
-            Require(player.Position == new Vector2Int(0, -1), "Backward position is (0, -1).");
+            Require(player.Position == Vector2Int.zero, "One backward step reaches row zero.");
             Require(!player.TryMove(Vector2Int.down), "A second backward step is blocked.");
             Require(player.TryMove(Vector2Int.right), "Sideways movement behind the frontier is allowed.");
             Require(!player.TryMove(Vector2Int.down), "Moving sideways does not reset the backward allowance.");
@@ -56,12 +56,13 @@ public static class GameplayRegressionChecks
             Require(player.TryMove(Vector2Int.up), "Advance into a new row.");
             Invoke(camera, "LateUpdate");
             Vector3 advancedCamera = camera.transform.position;
-            Require(player.FurthestRow == 1 && gameplay.ForwardScore == 100 && gameplay.Score == 100,
+            Require(player.FurthestRow == 2 && gameplay.ForwardScore == 100 && gameplay.Score == 100,
                 "A new row awards exactly 100 points.");
             Require(Mathf.Approximately(advancedCamera.y - startCamera.y, 1f), "Camera advances exactly one row.");
             var ground = Field(map, "_ground").As<Tilemap>();
-            Require(ground.cellBounds.size.x == MapManager.Width && ground.cellBounds.size.y == MapManager.VisibleRows,
-                "Loaded map is nine columns wide and eleven rows high.");
+            Require(ground.cellBounds.size.x == MapManager.Width && ground.cellBounds.size.y <= MapPattern.MaximumLength * 3 + MapManager.RowsBehind &&
+                ground.HasTile(new Vector3Int(0, player.FurthestRow + MapManager.RowsAhead, 0)),
+                "Three full patterns cover the camera without unbounded floor data.");
             BoundsInt advancedBounds = ground.cellBounds;
 
             for (int i = 0; i < 3; i++)
@@ -109,7 +110,8 @@ public static class GameplayRegressionChecks
             CheckMapInitialization();
             CheckMapContent();
             CheckDamageObstacles();
-            Debug.Log("[GameplayRegressionChecks] PASS: movement/camera/score, map routes, lava, stepping stones, terrain, spikes, chasing monsters, rolling rocks and health.");
+            CheckChaserLifetimeAndBridges();
+            Debug.Log("[GameplayRegressionChecks] PASS: movement/camera/score, map routes, lava, stepping stones, terrain, spikes, chasing monsters, rolling rocks, previous-pattern retention, monster lifetime/river barriers and health.");
             EditorApplication.Exit(0);
         }
         catch (Exception exception)
@@ -158,6 +160,7 @@ public static class GameplayRegressionChecks
         }
         SetField(map, "_coinChance", coinChance);
         var gameplay = UnityEngine.Object.FindFirstObjectByType<GameplayController>();
+        SetField(UnityEngine.Object.FindFirstObjectByType<PlayerController>(), "_startPosition", Vector2Int.zero);
         SetField(gameplay, "_moveAchievementIds", Array.Empty<string>());
         typeof(GameStateManager).GetProperty(nameof(GameStateManager.Instance))!.SetValue(null, UnityEngine.Object.FindFirstObjectByType<GameStateManager>());
         Invoke(gameplay, "Start");
@@ -171,7 +174,7 @@ public static class GameplayRegressionChecks
         pattern.gameObject.SetActive(false);
         var localRows = new HazardRowDefinition[hazards.Length];
         for (int i = 0; i < hazards.Length; i++)
-            localRows[i] = new HazardRowDefinition { row = hazards[i].row - 1, steppingStoneColumns = hazards[i].steppingStoneColumns };
+            localRows[i] = new HazardRowDefinition { row = hazards[i].row, steppingStoneColumns = hazards[i].steppingStoneColumns };
         SetField(pattern, "_lavaRows", localRows);
         if (obstacleChance > 0f)
         {
@@ -196,6 +199,7 @@ public static class GameplayRegressionChecks
         var map = UnityEngine.Object.FindFirstObjectByType<MapManager>();
         ConfigureMap(map, Array.Empty<HazardRowDefinition>());
         SetField(map, "_coinChance", 0f);
+        var coinLayer = Field(map, "_coinLayer").As<Tilemap>();
         SetField(map, "_cellTriggers", new[]
         {
             new CellTriggerDefinition { id = "duplicate", position = new Vector2Int(0, 1) },
@@ -204,8 +208,9 @@ public static class GameplayRegressionChecks
         bool rejected = false;
         try { map.LoadRows(0); }
         catch (InvalidOperationException) { rejected = true; }
-        Require(rejected && !Field(map, "_contentInitialized").As<bool>() && Field(map, "_coinLayer") == null,
-            "Failed configuration validation leaves no initialized flag or generated coin layer.");
+        Require(rejected && !Field(map, "_contentInitialized").As<bool>() &&
+            Field(map, "_coinLayer") == coinLayer && coinLayer.GetUsedTilesCount() == 0,
+            "Failed configuration validation leaves the authored coin layer untouched and does not initialize content.");
         SetField(map, "_cellTriggers", new[] { new CellTriggerDefinition { id = "valid", position = new Vector2Int(0, 1) } });
         SetField(map, "_rowTriggers", new[] { new RowTriggerDefinition { id = "configured", row = 2 } });
         Require(!map.RegisterRowTrigger(new RowTriggerDefinition { id = "configured", row = 3 }),
@@ -334,7 +339,9 @@ public static class GameplayRegressionChecks
                 }
                 foreach (var coin in map.Coins)
                     Require(map.CanMoveTo(coin.Key) && !map.IsLethal(coin.Key) &&
-                        (coin.Key == player.Position || map.TryGetNextStep(player.Position, coin.Key, out _)), "Every visible coin stays on a reachable safe cell.");
+                        map.GetContactDamage(coin.Key) == 0, "Every generated coin stays on a safe cell.");
+                Require((bool)typeof(MapManager).GetMethod("HasValidRoutes", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(map, null),
+                    "All three patterns' coins stay reachable under the actual backward limit.");
                 Require(GameStateManager.Instance.State == GameState.Playing, "Following a safe route never enters a lethal row cell.");
             }
         }
@@ -399,7 +406,7 @@ public static class GameplayRegressionChecks
             typeof(MapManager).GetMethod("AdvanceMovingObstacles", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(map, new object[] { float.MaxValue });
             var movers = (System.Collections.IList)Field(map, "_movingObstacles");
             var position = (Vector2Int)movers[0].GetType().GetField("Position")!.GetValue(movers[0]);
-            Require(position.y == 3 && position.x >= -2 && position.x <= 0, "Rolling rock stays in its authored row and range.");
+            Require(position.y == 2 && position.x >= -2 && position.x <= 0, "Rolling rock stays in its authored row and range.");
         }
         Require(player.Health == 2 && map.GetContactDamage(player.Position) == ((DamageTile)chase.tile).Damage,
             "A chasing monster enters the player's cell and causes contact damage.");
@@ -420,14 +427,76 @@ public static class GameplayRegressionChecks
         map = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { chase });
         terrain = AssetDatabase.LoadAssetAtPath<TileBase>("Assets/Gameplay/ObstacleTile.asset");
         player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
-        Require(map.TrySetObstacle(new Vector2Int(0, 3), terrain) &&
-            map.TryGetNextStep(new Vector2Int(0, 4), player.Position, out var next) && next.x != 0 && next.y == 4,
+        Require(map.TrySetObstacle(new Vector2Int(0, 2), terrain) &&
+            map.TryGetNextStep(new Vector2Int(0, 3), player.Position, out var next) && next.x != 0 && next.y == 3,
             "Monsters find a cardinal route around impassable terrain.");
         patrol.direction = Vector2Int.up;
         bool verticalPatrolRejected = false;
         try { StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { patrol }); }
         catch (TargetInvocationException exception) when (exception.InnerException is InvalidOperationException) { verticalPatrolRejected = true; }
         Require(verticalPatrolRejected, "Vertical rolling-rock patrols are rejected.");
+    }
+
+    private static void CheckChaserLifetimeAndBridges()
+    {
+        var chase = new MovingObstacleDefinition { position = new Vector2Int(0, 3), movement = ObstacleMovement.Chase };
+        var map = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { chase });
+        var player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
+        SetField(player, "_nextDamageTime", float.PositiveInfinity);
+        var movers = (System.Collections.IList)Field(map, "_movingObstacles");
+        var originalMonster = movers[0];
+        var placements = (System.Collections.IList)Field(map, "_placedPatterns");
+        var originalView = (MapPattern)Field(placements[0], "View");
+        for (int row = 1; row <= MapPattern.MaximumLength * 2; row++)
+        {
+            Require(player.TryMove(Vector2Int.up), "Traverse two full pattern boundaries while the monster follows.");
+            if (row == MapPattern.MaximumLength)
+            {
+                Require(originalView != null && placements.Count == 3 && map.GetComponentsInChildren<MapPattern>().Length == 3,
+                    "The previous pattern remains intact after the first boundary.");
+                Require(!map.TryGetNextStep(player.Position, player.Position + Vector2Int.down * 2, out _),
+                    "Retaining the previous floor does not allow a player path beyond the one-row backward limit.");
+            }
+            if (row == MapPattern.MaximumLength * 2)
+                Require(originalView == null && movers.Contains(originalMonster),
+                    "A following monster survives removal of its original pattern.");
+            Invoke(map, "AdvanceMovingObstacles", float.MaxValue);
+        }
+        var monsterPosition = (Vector2Int)Field(originalMonster, "Position");
+        while (Math.Abs(player.Position.x - monsterPosition.x) + Math.Abs(player.Position.y - monsterPosition.y) <
+            MapManager.MonsterDespawnDistance - 1)
+            Require(player.TryMove(Vector2Int.up) && movers.Contains(originalMonster), "A monster remains alive within seven cells.");
+        Require(movers.Contains(originalMonster), "A monster remains alive at a distance of seven cells.");
+        Require(player.TryMove(Vector2Int.up) && !movers.Contains(originalMonster) && map.GetContactDamage(monsterPosition) == 0,
+            "Exactly eight cells of separation removes the monster and its contact damage.");
+        map.LoadRows(player.FurthestRow);
+        Require(!movers.Contains(originalMonster), "A despawned monster does not respawn on row reload.");
+
+        map = StartMap(new[] { new HazardRowDefinition { row = 4, steppingStoneColumns = new[] { -1, 0, 1 } } }, moving: new[] { chase });
+        player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
+        SetField(player, "_nextDamageTime", float.PositiveInfinity);
+        for (int row = 1; row <= 3; row++) Require(player.TryMove(Vector2Int.up), "Reach the river bank.");
+        Require(map.TryGetNextStep(player.Position, new Vector2Int(0, 4), out var next) && next == new Vector2Int(0, 4),
+            "The player can path across a stepping stone while sharing a monster's cell.");
+        Require(!map.TryMoveObstacle(new Vector2Int(0, 3), new Vector2Int(0, 4)), "Monsters cannot directly enter a stepping stone.");
+        Require(player.TryMove(Vector2Int.up) && player.TryMove(Vector2Int.up), "The player can cross the stepping stone.");
+        Require(!map.TryGetNextStep(new Vector2Int(0, 3), player.Position, out _), "Monster pathfinding cannot cross the river row.");
+        Invoke(map, "AdvanceMovingObstacles", float.MaxValue);
+        Require(map.GetContactDamage(new Vector2Int(0, 3)) > 0, "A nearby river-blocked monster remains at the bank.");
+        for (int row = 6; row <= 10; row++) Require(player.TryMove(Vector2Int.up), "Leave the blocked monster behind.");
+        Require(map.GetContactDamage(new Vector2Int(0, 3)) > 0 && player.TryMove(Vector2Int.up) &&
+            map.GetContactDamage(new Vector2Int(0, 3)) == 0, "A river-blocked monster despawns at eight cells.");
+
+        map = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { chase });
+        player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
+        movers = (System.Collections.IList)Field(map, "_movingObstacles");
+        originalMonster = movers[0];
+        for (int column = 1; column <= MapManager.HalfWidth; column++)
+            Require(player.TryMove(Vector2Int.right), "Move laterally to a Manhattan distance of seven cells.");
+        for (int row = 1; row <= 6; row++)
+            Require(player.TryMove(Vector2Int.up) && movers.Contains(originalMonster), "A diagonally separated monster remains within seven cells.");
+        Require(movers.Contains(originalMonster) && player.TryMove(Vector2Int.up) && !movers.Contains(originalMonster),
+            "Both coordinate differences count toward the eight-cell despawn threshold.");
     }
 
     private static void Require(bool condition, string message)
@@ -437,13 +506,13 @@ public static class GameplayRegressionChecks
     }
 
     private static object Field(object target, string name) =>
-        target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(target);
+        target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)!.GetValue(target);
 
     private static T As<T>(this object value) => (T)value;
 
     private static void SetField(object target, string name, object value) =>
         target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(target, value);
 
-    private static void Invoke(object target, string name) =>
-        target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(target, null);
+    private static void Invoke(object target, string name, params object[] args) =>
+        target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(target, args);
 }

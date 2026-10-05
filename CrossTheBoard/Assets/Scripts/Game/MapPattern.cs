@@ -8,8 +8,8 @@ namespace CrossTheBoard
     [RequireComponent(typeof(Grid))]
     public sealed class MapPattern : MonoBehaviour
     {
-        public const int MinimumLength = 6;
-        public const int MaximumLength = 30;
+        public const int MinimumLength = 15;
+        public const int MaximumLength = 50;
 
         [SerializeField, Range(MinimumLength, MaximumLength)] private int _length = MinimumLength;
         [SerializeField] private string _themeId = "meadow";
@@ -45,8 +45,9 @@ namespace CrossTheBoard
         {
             if (_length < MinimumLength || _length > MaximumLength || string.IsNullOrWhiteSpace(_themeId) ||
                 _ground == null || _structures == null || _ground == _structures ||
+                _ground.GetComponent<TilemapRenderer>() == null || _structures.GetComponent<TilemapRenderer>() == null ||
                 _lavaRows == null || _movingObstacles == null || _rowTriggers == null)
-                throw new InvalidOperationException($"Pattern '{name}' requires a theme, 6–30 rows and separate ground/structure Tilemaps.");
+                throw new InvalidOperationException($"Pattern '{name}' requires a theme, {MinimumLength}–{MaximumLength} rows and separate ground/structure Tilemaps with renderers.");
             var grid = GetComponent<Grid>();
             if (grid.cellSize != Vector3.one || grid.cellGap != Vector3.zero || grid.cellLayout != GridLayout.CellLayout.Rectangle ||
                 _ground.transform.parent != transform || _structures.transform.parent != transform ||
@@ -71,9 +72,12 @@ namespace CrossTheBoard
             {
                 if (obstacle == null || obstacle.tile is not DamageTile damageTile || damageTile.Damage <= 0 || !Contains((Vector3Int)obstacle.position) ||
                     !Enum.IsDefined(typeof(ObstacleMovement), obstacle.movement) ||
-                    float.IsNaN(obstacle.stepInterval) || float.IsInfinity(obstacle.stepInterval) || obstacle.stepInterval <= 0f ||
-                    !blocked.Add(obstacle.position))
-                    throw new InvalidOperationException($"Invalid or overlapping moving obstacle in '{name}'.");
+                    float.IsNaN(obstacle.stepInterval) || float.IsInfinity(obstacle.stepInterval) || obstacle.stepInterval <= 0f)
+                    throw new InvalidOperationException($"Invalid moving obstacle in '{name}' at {obstacle?.position}: " +
+                        $"tile '{obstacle?.tile?.name}' ({obstacle?.tile?.GetType().Name ?? "missing"}), movement {obstacle?.movement}, interval {obstacle?.stepInterval}. " +
+                        "A positive-damage DamageTile and valid position/movement/interval are required.");
+                if (!blocked.Add(obstacle.position))
+                    throw new InvalidOperationException($"Moving obstacle in '{name}' overlaps another obstacle at {obstacle.position}.");
                 if (obstacle.movement == ObstacleMovement.Patrol &&
                     (obstacle.direction != Vector2Int.left && obstacle.direction != Vector2Int.right ||
                         obstacle.distance < 1 || obstacle.distance > MaximumLength))
@@ -103,6 +107,8 @@ namespace CrossTheBoard
                 }
             foreach (var obstacle in _movingObstacles)
             {
+                if (obstacle.movement == ObstacleMovement.Chase && lava.ContainsKey(obstacle.position.y))
+                    throw new InvalidOperationException($"Monster in '{name}' cannot start on a stepping-stone row.");
                 if (obstacle.movement != ObstacleMovement.Patrol) continue;
                 for (int step = 1; step <= obstacle.distance; step++)
                 {
@@ -120,13 +126,19 @@ namespace CrossTheBoard
             for (int row = 1; row < _length; row++)
             {
                 var cells = new HashSet<Vector2Int>();
+                bool previousRowOpen = false, currentRowOpen = false;
                 for (int y = row - 1; y <= row; y++)
                     for (int x = -MapManager.HalfWidth; x <= MapManager.HalfWidth; x++)
-                        if (Safe(new Vector2Int(x, y))) cells.Add(new Vector2Int(x, y));
+                        if (Safe(new Vector2Int(x, y)))
+                        {
+                            cells.Add(new Vector2Int(x, y));
+                            if (y == row) currentRowOpen = true;
+                            else previousRowOpen = true;
+                        }
+                if (!previousRowOpen || !currentRowOpen)
+                    throw new InvalidOperationException($"Pattern '{name}' has no safe forward route around row {row}.");
                 var queue = new Queue<Vector2Int>();
                 foreach (var position in cells) { queue.Enqueue(position); break; }
-                if (queue.Count == 0)
-                    throw new InvalidOperationException($"Pattern '{name}' has no forward route at row {row}.");
                 var visited = new HashSet<Vector2Int>();
                 while (queue.Count > 0)
                 {

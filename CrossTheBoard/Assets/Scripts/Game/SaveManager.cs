@@ -178,6 +178,7 @@ namespace CrossTheBoard
                 if (progress == null || string.IsNullOrWhiteSpace(progress.id) || progress.value < 0 || !ids.Add(progress.id))
                     throw new InvalidDataException("Invalid achievement progress.");
             if (data.coins < 0 || data.totalCoinsCollected < 0 || data.totalForwardCells < 0 || data.bestDistance < 0 ||
+                data.lastScore < 0 || data.bestScore < data.lastScore || data.lastRunCoins < 0 ||
                 data.unlockedCharacterIds == null)
                 throw new InvalidDataException("Invalid wallet or collection progress.");
             var characterIds = new HashSet<string>();

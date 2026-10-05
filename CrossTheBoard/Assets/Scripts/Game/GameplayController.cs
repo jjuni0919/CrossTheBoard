@@ -12,6 +12,7 @@ namespace CrossTheBoard
         [SerializeField] private PlayerController _player;
         [SerializeField] private string[] _moveAchievementIds = Array.Empty<string>();
         [SerializeField, Min(0)] private int _pointsPerCoin = 10;
+        [SerializeField] private string _mainMenuScene = "MainMenuScene";
 
         public int Score { get; private set; }
         public int ForwardScore { get; private set; }
@@ -25,6 +26,8 @@ namespace CrossTheBoard
         private bool _started;
         private int _startRow;
         private int _savedForwardCells;
+        private bool _finished;
+        private GameStateManager _state;
 
         private void Start()
         {
@@ -57,8 +60,10 @@ namespace CrossTheBoard
             _player.SetCharacter(CharacterCatalog.GetSprite(ActiveCharacterId));
             _map.LoadRows(_player.FurthestRow);
             _player.Moved += OnPlayerMoved;
+            _state = GameStateManager.Instance;
+            _state.StateChanged += OnStateChanged;
             _started = true;
-            GameStateManager.Instance.SetState(GameState.Playing);
+            _state.SetState(GameState.Playing);
             ScoreChanged?.Invoke(Score);
             _map.NotifyPlayerEntered(_player.Position);
             if (Application.isPlaying) GameplayHud.Create(this);
@@ -143,6 +148,28 @@ namespace CrossTheBoard
 
         public void AddItemScore(int points) => AddCollectionScore(points, false);
 
+        private void OnStateChanged(GameState state)
+        {
+            if (state != GameState.GameOver || !_started || _finished) return;
+            _finished = true;
+            var save = SaveManager.Instance;
+            int distance = _scoredRow - _startRow;
+            int unsavedCells = distance - _savedForwardCells;
+            if (save != null && !save.TryUpdate(data =>
+            {
+                data.lastScore = Score;
+                data.bestScore = Math.Max(data.bestScore, Score);
+                data.lastRunCoins = CollectedCoins;
+                data.totalForwardCells = checked(data.totalForwardCells + unsavedCells);
+                data.bestDistance = Math.Max(data.bestDistance, distance);
+            }))
+                Debug.LogWarning("이번 판 결과를 저장하지 못했습니다. 기존 저장 데이터는 유지됩니다.", this);
+            if (!Application.isPlaying) return;
+            var scenes = SceneLoadManager.Instance;
+            if (!scenes.IsLoading && !scenes.LoadScene(_mainMenuScene, GameState.MainMenu))
+                Debug.LogError("게임 종료 후 메인 메뉴로 이동하지 못했습니다.", this);
+        }
+
         private void AddCollectionScore(int points, bool gold)
         {
             if (points < 0)
@@ -163,6 +190,7 @@ namespace CrossTheBoard
         {
             if (_player != null)
                 _player.Moved -= OnPlayerMoved;
+            if (_state != null) _state.StateChanged -= OnStateChanged;
         }
     }
 }

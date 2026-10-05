@@ -232,7 +232,6 @@ public static class CollectionRegressionChecks
         var gameplay = UnityEngine.Object.FindFirstObjectByType<GameplayController>();
         var map = UnityEngine.Object.FindFirstObjectByType<MapManager>();
         Singleton(typeof(GameStateManager), UnityEngine.Object.FindFirstObjectByType<GameStateManager>());
-        ((Tilemap)Field(map, "_structures")).ClearAllTiles();
         Set(map, "_coinChance", 1f);
         GameplayRegressionChecks.ConfigureMap(map, Array.Empty<HazardRowDefinition>(), 42);
         Set(gameplay, "_moveAchievementIds", Array.Empty<string>());

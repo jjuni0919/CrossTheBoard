@@ -910,10 +910,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 9166cd45947247a7897951d0efa12f41, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CrossTheBoard.MapManager
-  _ground: {fileID: 0}
-  _structures: {fileID: 0}
-  _coinLayer: {fileID: 0}
-  _groundTile: {fileID: 11400000, guid: 81bfc8aaeedff064787ec1e172eb2d52, type: 2}
+  _spriteMaterial: {fileID: 2100000, guid: 57cb137a01dd0394686d61d6c83efab8, type: 2}
+  _steppingStonePrefab: {fileID: 7328654080909910446, guid: dcd8ff45605120447a611a1b38c66fb9, type: 3}
+  _coinSprite: {fileID: 0}
+  _rewardSprite: {fileID: 0}
   _player: {fileID: 284566145}
   _patternResourcesPath: MapPatterns
   _initialThemeId: meadow

@@ -135,6 +135,11 @@ namespace CrossTheBoard
             Position = destination;
             FurthestRow = Mathf.Max(FurthestRow, Position.y);
             transform.position = _map.GetWorldPosition(Position);
+            if (_map.TryBoardStone(Position, out var platformPosition, out var offset))
+            {
+                Position = platformPosition;
+                SetPlatformOffset(offset);
+            }
             LogPosition();
             Moved?.Invoke(previous, Position);
             return true;
@@ -154,6 +159,16 @@ namespace CrossTheBoard
             HealthChanged?.Invoke(Health);
             return true;
         }
+
+        internal void RideStone(Vector2Int position, Vector3 offset)
+        {
+            Vector2Int previous = Position;
+            Position = position;
+            SetPlatformOffset(offset);
+            Moved?.Invoke(previous, Position);
+        }
+
+        internal void SetPlatformOffset(Vector3 offset) => transform.position = _map.GetWorldPosition(Position) + offset;
 
         private void LogPosition()
         {

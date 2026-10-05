@@ -98,7 +98,7 @@ public static class MapPatternRegressionChecks
         string folder = "Assets/Resources/MapPatterns/" + theme;
         MapPatternEditor.EnsureFolder(folder);
         string path = folder + "/" + name + ".prefab";
-        var pattern = MapPatternEditor.CreatePattern(name, length, theme);
+        var pattern = MapPatternEditor.CreatePattern(name, length, theme, true);
         try
         {
             pattern.Ground.color = theme == "meadow" ? new Color(0.58f, 0.78f, 0.5f) : new Color(0.56f, 0.48f, 0.46f);
@@ -113,6 +113,7 @@ public static class MapPatternRegressionChecks
             Set(pattern, "_lavaRows", lava);
             Set(pattern, "_movingObstacles", moving);
             Set(pattern, "_rowTriggers", triggers);
+            MapPatternEditor.ConvertObstacles(pattern);
             pattern.Validate();
             Require(PrefabUtility.SaveAsPrefabAsset(pattern.gameObject, path) != null, "Pattern prefab is saved.");
         }
@@ -130,11 +131,12 @@ public static class MapPatternRegressionChecks
             {
                 var pattern = prefab.GetComponent<MapPattern>();
                 pattern.Validate();
-                foreach (var mover in pattern.MovingObstacles)
+                foreach (var mover in pattern.GetComponentsInChildren<MapObstacle>())
                 {
-                    string tilePath = mover.movement == ObstacleMovement.Patrol
+                    if (mover.Movement == ObstacleMovement.None) continue;
+                    string tilePath = mover.Movement == ObstacleMovement.Patrol
                         ? "Assets/Gameplay/RollingRockTile.asset" : "Assets/Gameplay/MonsterTile.asset";
-                    Require(mover.tile == AssetDatabase.LoadAssetAtPath<DamageTile>(tilePath),
+                    Require(mover.Tile == AssetDatabase.LoadAssetAtPath<DamageTile>(tilePath),
                         "Every authored mover retains its saved damage tile reference.");
                 }
                 lengths.Add(pattern.Length);
@@ -175,26 +177,28 @@ public static class MapPatternRegressionChecks
         var pattern = UnityEngine.Object.Instantiate(source).GetComponent<MapPattern>();
         try
         {
-            var mover = pattern.MovingObstacles[0];
-            var tile = mover.tile;
-            var cell = (Vector3Int)mover.position;
-            pattern.Structures.SetTile(cell, tile);
+            var mover = Array.Find(pattern.GetComponentsInChildren<MapObstacle>(), obstacle => obstacle.Movement != ObstacleMovement.None);
+            var duplicate = UnityEngine.Object.Instantiate(mover, pattern.transform);
+            duplicate.transform.localPosition = mover.transform.localPosition;
             bool overlapRejected = false;
-            try { pattern.Validate(); }
-            catch (InvalidOperationException exception) { overlapRejected = exception.Message.Contains("overlaps another obstacle at " + mover.position); }
-            Require(overlapRejected, "Overlapping mover spawns report the exact cell.");
-            pattern.Structures.SetTile(cell, null);
-            mover.tile = null;
-            bool missingTileRejected = false;
-            try { pattern.Validate(); }
-            catch (InvalidOperationException exception) { missingTileRejected = exception.Message.Contains("Invalid moving obstacle") && exception.Message.Contains("missing"); }
-            Require(missingTileRejected, "A missing mover tile is rejected before streaming begins.");
-            mover.tile = AssetDatabase.LoadAssetAtPath<TileBase>("Assets/Gameplay/ObstacleTile.asset");
-            bool tileRejected = false;
-            try { pattern.Validate(); }
-            catch (InvalidOperationException exception) { tileRejected = exception.Message.Contains("Invalid moving obstacle") && !exception.Message.Contains("overlaps"); }
-            Require(tileRejected, "A non-damage mover tile is not mislabeled as an overlap.");
-            mover.tile = tile;
+            try { pattern.Validate(); } catch (InvalidOperationException) { overlapRejected = true; }
+            Require(overlapRejected, "Duplicate sprite obstacle cells are rejected.");
+            UnityEngine.Object.DestroyImmediate(duplicate.gameObject);
+            Set(mover, "_damage", 0);
+            bool damageRejected = false;
+            try { pattern.Validate(); } catch (InvalidOperationException) { damageRejected = true; }
+            Require(damageRejected, "Moving sprite obstacles require positive damage.");
+            Set(mover, "_damage", 1);
+            Set(mover, "_speed", float.NaN);
+            bool speedRejected = false;
+            try { pattern.Validate(); } catch (InvalidOperationException) { speedRejected = true; }
+            Require(speedRejected, "Nonfinite movement speed is rejected.");
+            Set(mover, "_speed", 1f);
+            Set(mover, "_tile", null);
+            var visual = mover.GetComponentInChildren<SpriteRenderer>().transform;
+            visual.localScale = new Vector3(3f, 3f, 1f);
+            visual.localPosition = new Vector3(1f, 2f, 0f);
+            pattern.Validate();
             int length = pattern.Length;
             foreach (int invalidLength in new[] { MapPattern.MinimumLength - 1, MapPattern.MaximumLength + 1 })
             {
@@ -208,7 +212,7 @@ public static class MapPatternRegressionChecks
             pattern.Validate();
         }
         finally { UnityEngine.Object.DestroyImmediate(pattern.gameObject); }
-        pattern = MapPatternEditor.CreatePattern("Blocked row regression", MapPattern.MinimumLength, "regression");
+        pattern = MapPatternEditor.CreatePattern("Blocked row regression", MapPattern.MinimumLength, "regression", true);
         try
         {
             var tile = AssetDatabase.LoadAssetAtPath<TileBase>("Assets/Gameplay/ObstacleTile.asset");
@@ -239,13 +243,9 @@ public static class MapPatternRegressionChecks
     {
         EditorSceneManager.OpenScene("Assets/Scenes/GameplayScene.unity");
         var map = UnityEngine.Object.FindFirstObjectByType<MapManager>();
-        var ground = (Tilemap)Field(map, "_ground");
-        var structures = (Tilemap)Field(map, "_structures");
-        Require(map.GetComponentsInChildren<MapPattern>(true).Length == 0,
-            "Gameplay contains no fixed pattern instances before the Resources stream starts.");
-        Require(ground.transform.parent == map.transform && structures.transform.parent == map.transform &&
-            ((Tilemap)Field(map, "_coinLayer")).transform.parent == map.transform,
-            "Gameplay data and collectible layers belong to Map, not to a disposable pattern.");
+        Require(map.GetComponentsInChildren<MapPattern>(true).Length == 0 &&
+            map.GetComponentsInChildren<Tilemap>(true).Length == 0,
+            "Map does not need authored Ground, Structures or Coins children.");
         Require(map.GetWorldPosition(Vector2Int.zero) == Vector3.zero, "The map preserves gameplay grid coordinates.");
     }
 
@@ -393,54 +393,37 @@ public static class MapPatternRegressionChecks
     private static void CheckPatternRendering(MapManager map, PlayerController player)
     {
         var placements = (IList)Field(map, "_placedPatterns");
-        int rendered = 0;
+        Require(placements.Count == 3, "Exactly three placements are streamed.");
+        int current = 0, totalRows = 0;
         foreach (var placement in placements)
         {
             var view = (MapPattern)Field(placement, "View");
-            if (view != null && view.gameObject.activeInHierarchy)
-            {
-                Require(view.transform.parent == map.transform && view.Ground.GetComponent<TilemapRenderer>().enabled &&
-                    view.Structures.GetComponent<TilemapRenderer>().enabled, "Live patterns are visible children of Map.");
-                rendered++;
-            }
+            Require(view != null && view.gameObject.activeInHierarchy && view.transform.parent == map.transform &&
+                view.Ground.GetComponent<TilemapRenderer>().enabled && view.Structures == null,
+                "Live patterns render their own floor and sprite objects, without a structure Tilemap.");
+            totalRows += view.Length;
         }
-        Require(placements.Count == 3 && rendered == 3, "Three current/upcoming patterns are retained and rendered, including at startup.");
-        int current = 0;
         while ((int)placements[current].GetType().GetProperty("LastRow").GetValue(placements[current]) < player.FurthestRow) current++;
-        Require(current <= 1 && (int)Field(placements[current], "FirstRow") <= player.FurthestRow,
-            "At most one full previous pattern remains behind the current pattern.");
-        var ground = (Tilemap)Field(map, "_ground");
-        var structures = (Tilemap)Field(map, "_structures");
-        var collectibles = (Tilemap)Field(map, "_coinLayer");
-        var renderer = collectibles.GetComponent<TilemapRenderer>();
-        Require(ground.cellBounds.size.y <= MapPattern.MaximumLength * 3 + MapManager.RowsBehind &&
+        Require(current <= 1 && totalRows <= MapPattern.MaximumLength * 3 &&
             ((IDictionary)Field(map, "_registeredRows")).Count <= 6 &&
             ((IList)Field(map, "_movingObstacles")).Count <= MapManager.Width * (MapManager.MonsterDespawnDistance * 2 - 1) + 6,
-            "Streaming bounds floor data, actors and generated trigger registrations.");
-        Require(collectibles.transform.parent == map.transform && renderer.enabled &&
-            renderer.sortingOrder > structures.GetComponent<TilemapRenderer>().sortingOrder &&
-            renderer.sortingOrder < player.GetComponentInChildren<SpriteRenderer>().sortingOrder,
-            "The coin/special-cell layer is visible above terrain/obstacles without covering the player.");
-        foreach (var coin in map.Coins)
-            Require(collectibles.GetSprite((Vector3Int)coin.Key) != null && map.GetCoinAmount(coin.Key) > 0,
-                "Every generated coin has a rendered sprite and collectible value.");
-        foreach (var reward in map.Rewards)
-            Require(collectibles.GetSprite((Vector3Int)reward.Key) != null && map.GetRewardPoints(reward.Key) > 0 &&
-                !map.Coins.ContainsKey(reward.Key), "Every special reward cell has a sprite and does not overlap a coin.");
-        Require(!ground.GetComponent<TilemapRenderer>().enabled && !structures.GetComponent<TilemapRenderer>().enabled,
-            "The shared gameplay tilemaps do not render a duplicate pattern.");
+            "One previous pattern is retained and floor, actor and trigger data remain bounded.");
+        var collectibles = (System.Collections.Generic.Dictionary<Vector2Int, SpriteRenderer>)Field(map, "_collectibleViews");
+        Require(collectibles.Count == map.Coins.Count + map.Rewards.Count, "Collectible sprites and values have identical lifetimes.");
+        foreach (var collectible in collectibles)
+            Require(collectible.Value.sprite != null && collectible.Value.enabled &&
+                collectible.Value.transform.parent == map.transform && collectible.Value.sortingOrder == 2,
+                "Coins and rewards use visible, independently configurable sprite objects.");
         for (int row = player.FurthestRow - MapManager.RowsBehind; row <= player.FurthestRow + MapManager.RowsAhead; row++)
             for (int x = -MapManager.HalfWidth; x <= MapManager.HalfWidth; x++)
             {
                 var placement = Invoke(map, "GetPattern", row);
-                Require(placement != null, "Every visible row belongs to a rendered pattern.");
+                Require(placement != null, "Every camera row belongs to a live pattern.");
                 var view = (MapPattern)Field(placement, "View");
-                var cell = new Vector3Int(x, row, 0);
                 var local = new Vector3Int(x, row - (int)Field(placement, "FirstRow"), 0);
-                Require(view != null && view.Ground.GetTile(local) == ground.GetTile(cell) &&
-                    view.Structures.GetTile(local) == structures.GetTile(cell) && view.Ground.GetColor(local) == ground.GetColor(cell) &&
+                Require(view.Ground.HasTile(local) &&
                     view.Ground.GetCellCenterWorld(local) == map.GetWorldPosition(new Vector2Int(x, row)),
-                    "Rendered terrain, hazards and actors match gameplay cells.");
+                    "The native pattern floor agrees with logical world positions.");
             }
     }
 

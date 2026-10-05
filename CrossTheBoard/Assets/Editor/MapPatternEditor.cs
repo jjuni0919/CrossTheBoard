@@ -23,6 +23,11 @@ public sealed class MapPatternEditor : Editor
             pattern.Validate();
             Debug.Log($"Pattern '{pattern.name}' is valid.", pattern);
         }
+        if (pattern.Structures != null && GUILayout.Button("Convert Obstacles to Sprite Objects"))
+        {
+            ConvertObstacles(pattern);
+            EditorUtility.SetDirty(pattern);
+        }
     }
 
     [MenuItem("Assets/Create/CrossTheBoard/Map Pattern")]
@@ -44,7 +49,7 @@ public sealed class MapPatternEditor : Editor
         finally { DestroyImmediate(pattern.gameObject); }
     }
 
-    public static MapPattern CreatePattern(string name, int length, string themeId)
+    public static MapPattern CreatePattern(string name, int length, string themeId, bool legacyStructures = false)
     {
         if (length < MapPattern.MinimumLength || length > MapPattern.MaximumLength || string.IsNullOrWhiteSpace(themeId))
             throw new ArgumentException($"A pattern requires a theme and a length of {MapPattern.MinimumLength}–{MapPattern.MaximumLength} rows.");
@@ -52,17 +57,116 @@ public sealed class MapPatternEditor : Editor
         var pattern = root.GetComponent<MapPattern>();
         var ground = new GameObject("Ground", typeof(Tilemap), typeof(TilemapRenderer));
         ground.transform.SetParent(root.transform, false);
-        var structures = new GameObject("Structures", typeof(Tilemap), typeof(TilemapRenderer));
-        structures.transform.SetParent(root.transform, false);
-        structures.GetComponent<TilemapRenderer>().sortingOrder = 1;
         var data = new SerializedObject(pattern);
         data.FindProperty("_length").intValue = length;
         data.FindProperty("_themeId").stringValue = themeId;
         data.FindProperty("_ground").objectReferenceValue = ground.GetComponent<Tilemap>();
-        data.FindProperty("_structures").objectReferenceValue = structures.GetComponent<Tilemap>();
+        if (legacyStructures)
+        {
+            var structures = new GameObject("Structures", typeof(Tilemap), typeof(TilemapRenderer));
+            structures.transform.SetParent(root.transform, false);
+            structures.GetComponent<TilemapRenderer>().sortingOrder = 1;
+            data.FindProperty("_structures").objectReferenceValue = structures.GetComponent<Tilemap>();
+        }
         data.ApplyModifiedPropertiesWithoutUndo();
         ResizeGround(pattern);
         return pattern;
+    }
+
+    public static void ConvertObstacles(MapPattern pattern)
+    {
+        if (pattern.Structures != null)
+        {
+            foreach (var cell in pattern.Structures.cellBounds.allPositionsWithin)
+            {
+                var tile = pattern.Structures.GetTile(cell);
+                if (tile == null) continue;
+                var obstacle = CreateObstacle(pattern, new Vector2Int(cell.x, cell.y), tile);
+                var visual = obstacle.GetComponentInChildren<SpriteRenderer>();
+                visual.color *= pattern.Structures.GetColor(cell) * pattern.Structures.color;
+                visual.transform.localRotation = pattern.Structures.GetTransformMatrix(cell).rotation;
+                visual.transform.localScale = pattern.Structures.GetTransformMatrix(cell).lossyScale;
+            }
+            DestroyImmediate(pattern.Structures.gameObject);
+        }
+        foreach (var definition in pattern.MovingObstacles)
+            CreateObstacle(pattern, definition.position, definition.tile, definition);
+        var data = new SerializedObject(pattern);
+        data.FindProperty("_structures").objectReferenceValue = null;
+        data.FindProperty("_movingObstacles").arraySize = 0;
+        data.ApplyModifiedPropertiesWithoutUndo();
+        pattern.Validate();
+    }
+
+    public static MapObstacle CreateObstacle(MapPattern pattern, Vector2Int cell, TileBase tile, MovingObstacleDefinition movement = null)
+    {
+        var instance = new GameObject(tile.name, typeof(MapObstacle));
+        instance.transform.SetParent(pattern.transform, false);
+        instance.transform.localPosition = new Vector3(cell.x + 0.5f, cell.y + 0.5f, 0);
+        var obstacle = instance.GetComponent<MapObstacle>();
+        typeof(MapObstacle).GetMethod("InitializeTile", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            .Invoke(obstacle, new object[] { tile, movement });
+        foreach (var renderer in instance.GetComponentsInChildren<SpriteRenderer>())
+            renderer.sharedMaterial = AssetDatabase.LoadAssetAtPath<Material>("Assets/Gameplay/SpriteMaterial.mat");
+        return obstacle;
+    }
+
+    public static void MigrateSamples()
+    {
+        try
+        {
+            if (Application.companyName != "CodexValidation")
+                throw new InvalidOperationException("Batch migration requires the isolated validation project.");
+            EnsureFolder("Assets/Resources/MapObjects");
+            string stonePath = "Assets/Resources/MapObjects/SteppingStone.prefab";
+            if (AssetDatabase.LoadAssetAtPath<SteppingStone>(stonePath) == null)
+            {
+                var stone = new GameObject("SteppingStone", typeof(SpriteRenderer), typeof(SteppingStone));
+                var renderer = stone.GetComponent<SpriteRenderer>();
+                renderer.sprite = AssetDatabase.LoadAssetAtPath<Tile>("Assets/Gameplay/GroundTile.asset").sprite;
+                renderer.sortingOrder = 1;
+                renderer.sharedMaterial = AssetDatabase.LoadAssetAtPath<Material>("Assets/Gameplay/SpriteMaterial.mat");
+                PrefabUtility.SaveAsPrefabAsset(stone, stonePath);
+                DestroyImmediate(stone);
+            }
+            foreach (string guid in AssetDatabase.FindAssets("t:Prefab", new[] { "Assets/Resources/MapPatterns" }))
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guid);
+                var root = PrefabUtility.LoadPrefabContents(path);
+                try
+                {
+                    var pattern = root.GetComponent<MapPattern>();
+                    ConvertObstacles(pattern);
+                    var data = new SerializedObject(pattern);
+                    var rows = data.FindProperty("_lavaRows");
+                    for (int i = 0; i < rows.arraySize; i++)
+                    {
+                        var row = rows.GetArrayElementAtIndex(i);
+                        var columns = row.FindPropertyRelative("steppingStoneColumns");
+                        var stones = row.FindPropertyRelative("steppingStones");
+                        if (stones.arraySize > 0) continue;
+                        stones.arraySize = columns.arraySize;
+                        for (int j = 0; j < columns.arraySize; j++)
+                        {
+                            var stone = stones.GetArrayElementAtIndex(j);
+                            stone.FindPropertyRelative("column").intValue = columns.GetArrayElementAtIndex(j).intValue;
+                            stone.FindPropertyRelative("prefab").objectReferenceValue = AssetDatabase.LoadAssetAtPath<SteppingStone>(stonePath);
+                            stone.FindPropertyRelative("speed").floatValue = 1f;
+                            stone.FindPropertyRelative("direction").intValue = 1;
+                            stone.FindPropertyRelative("distance").intValue = 2;
+                        }
+                    }
+                    data.ApplyModifiedPropertiesWithoutUndo();
+                    pattern.Validate();
+                    PrefabUtility.SaveAsPrefabAsset(root, path);
+                }
+                finally { PrefabUtility.UnloadPrefabContents(root); }
+            }
+            AssetDatabase.SaveAssets();
+            Debug.Log("[MapPatternEditor] Migrated pattern obstacles without changing layout or GUIDs.");
+            EditorApplication.Exit(0);
+        }
+        catch (Exception exception) { Debug.LogException(exception); EditorApplication.Exit(1); }
     }
 
     private static void ResizeGround(MapPattern pattern)

@@ -14,9 +14,9 @@ namespace CrossTheBoard
         [SerializeField, Range(MinimumLength, MaximumLength)] private int _length = MinimumLength;
         [SerializeField] private string _themeId = "meadow";
         [SerializeField] private Tilemap _ground;
-        [SerializeField] private Tilemap _structures;
+        [SerializeField, HideInInspector] private Tilemap _structures;
         [SerializeField] private HazardRowDefinition[] _lavaRows = Array.Empty<HazardRowDefinition>();
-        [SerializeField] private MovingObstacleDefinition[] _movingObstacles = Array.Empty<MovingObstacleDefinition>();
+        [SerializeField, HideInInspector] private MovingObstacleDefinition[] _movingObstacles = Array.Empty<MovingObstacleDefinition>();
         [SerializeField] private RowTriggerDefinition[] _rowTriggers = Array.Empty<RowTriggerDefinition>();
         [SerializeField] private Color _lavaColor = new(0.95f, 0.25f, 0.08f);
         [SerializeField] private Color _steppingStoneColor = new(0.84f, 0.81f, 0.65f);
@@ -33,45 +33,74 @@ namespace CrossTheBoard
 
         public TileBase GetObstacle(Vector2Int position)
         {
-            var tile = _structures.GetTile(new Vector3Int(position.x, position.y, 0));
+            var tile = _structures != null ? _structures.GetTile(new Vector3Int(position.x, position.y, 0)) : null;
             if (tile != null) return tile;
             foreach (var obstacle in _movingObstacles)
                 if (obstacle.position == position) return obstacle.tile;
+            foreach (var obstacle in GetComponentsInChildren<MapObstacle>(true))
+                if (GetCell(obstacle.transform) == position) return obstacle.Tile;
             return null;
+        }
+
+        public Vector2Int GetCell(Transform obstacle)
+        {
+            var local = transform.InverseTransformPoint(obstacle.position) - new Vector3(0.5f, 0.5f, 0);
+            return new Vector2Int(Mathf.RoundToInt(local.x), Mathf.RoundToInt(local.y));
+        }
+
+        public bool HasObstacle(Vector2Int position)
+        {
+            if (GetObstacle(position) != null) return true;
+            foreach (var obstacle in GetComponentsInChildren<MapObstacle>(true))
+                if (GetCell(obstacle.transform) == position) return true;
+            return false;
         }
 
         [ContextMenu("Validate Pattern")]
         public void Validate()
         {
             if (_length < MinimumLength || _length > MaximumLength || string.IsNullOrWhiteSpace(_themeId) ||
-                _ground == null || _structures == null || _ground == _structures ||
-                _ground.GetComponent<TilemapRenderer>() == null || _structures.GetComponent<TilemapRenderer>() == null ||
+                _ground == null || _ground.GetComponent<TilemapRenderer>() == null ||
                 _lavaRows == null || _movingObstacles == null || _rowTriggers == null)
-                throw new InvalidOperationException($"Pattern '{name}' requires a theme, {MinimumLength}–{MaximumLength} rows and separate ground/structure Tilemaps with renderers.");
+                throw new InvalidOperationException($"Pattern '{name}' requires a theme, {MinimumLength}–{MaximumLength} rows and a ground Tilemap with a renderer.");
             var grid = GetComponent<Grid>();
             if (grid.cellSize != Vector3.one || grid.cellGap != Vector3.zero || grid.cellLayout != GridLayout.CellLayout.Rectangle ||
-                _ground.transform.parent != transform || _structures.transform.parent != transform ||
-                _ground.transform.localPosition != Vector3.zero || _structures.transform.localPosition != Vector3.zero ||
-                _ground.transform.localScale != Vector3.one || _structures.transform.localScale != Vector3.one ||
-                _ground.transform.localRotation != Quaternion.identity || _structures.transform.localRotation != Quaternion.identity)
+                _ground.transform.parent != transform ||
+                _ground.transform.localPosition != Vector3.zero || _ground.tileAnchor != new Vector3(0.5f, 0.5f, 0) ||
+                _ground.transform.localScale != Vector3.one || _ground.transform.localRotation != Quaternion.identity)
                 throw new InvalidOperationException($"Pattern '{name}' must use an untransformed unit grid.");
             foreach (var position in _ground.cellBounds.allPositionsWithin)
                 if (_ground.HasTile(position) && !Contains(position))
                     throw new InvalidOperationException($"Ground in '{name}' is outside x=-4..4, y=0..{_length - 1}.");
             var blocked = new HashSet<Vector2Int>();
-            foreach (var position in _structures.cellBounds.allPositionsWithin)
+            if (_structures != null)
             {
-                if (!_structures.HasTile(position)) continue;
-                if (!Contains(position))
-                    throw new InvalidOperationException($"Obstacle in '{name}' is outside the pattern.");
-                if (_structures.GetTile(position) is DamageTile damageTile && damageTile.Damage <= 0)
-                    throw new InvalidOperationException($"Damage tiles in '{name}' require positive damage.");
-                blocked.Add(new Vector2Int(position.x, position.y));
+                foreach (var position in _structures.cellBounds.allPositionsWithin)
+                {
+                    if (!_structures.HasTile(position)) continue;
+                    if (!Contains(position))
+                        throw new InvalidOperationException($"Obstacle in '{name}' is outside the pattern.");
+                    if (_structures.GetTile(position) is DamageTile damageTile && damageTile.Damage <= 0)
+                        throw new InvalidOperationException($"Damage tiles in '{name}' require positive damage.");
+                    blocked.Add(new Vector2Int(position.x, position.y));
+                }
+            }
+            var movers = new List<MovingObstacleDefinition>(_movingObstacles);
+            foreach (var obstacle in GetComponentsInChildren<MapObstacle>(true))
+            {
+                obstacle.Validate();
+                var cell = GetCell(obstacle.transform);
+                var local = transform.InverseTransformPoint(obstacle.transform.position);
+                if (!Contains((Vector3Int)cell) || (local - new Vector3(cell.x + 0.5f, cell.y + 0.5f, 0)).sqrMagnitude > 0.0001f ||
+                    !blocked.Add(cell))
+                    throw new InvalidOperationException($"Obstacle '{obstacle.name}' in '{name}' must occupy a unique cell centre.");
+                if (obstacle.Movement != ObstacleMovement.None)
+                    movers.Add(obstacle.GetMovement(cell));
             }
             foreach (var obstacle in _movingObstacles)
             {
                 if (obstacle == null || obstacle.tile is not DamageTile damageTile || damageTile.Damage <= 0 || !Contains((Vector3Int)obstacle.position) ||
-                    !Enum.IsDefined(typeof(ObstacleMovement), obstacle.movement) ||
+                    obstacle.movement != ObstacleMovement.Patrol && obstacle.movement != ObstacleMovement.Chase ||
                     float.IsNaN(obstacle.stepInterval) || float.IsInfinity(obstacle.stepInterval) || obstacle.stepInterval <= 0f)
                     throw new InvalidOperationException($"Invalid moving obstacle in '{name}' at {obstacle?.position}: " +
                         $"tile '{obstacle?.tile?.name}' ({obstacle?.tile?.GetType().Name ?? "missing"}), movement {obstacle?.movement}, interval {obstacle?.stepInterval}. " +
@@ -86,13 +115,28 @@ namespace CrossTheBoard
             var lava = new Dictionary<int, HashSet<int>>();
             foreach (var row in _lavaRows)
             {
-                if (row == null || row.row <= 0 || row.row >= _length - 1 || row.steppingStoneColumns == null ||
-                    row.steppingStoneColumns.Length == 0 || lava.ContainsKey(row.row))
+                if (row == null || row.row <= 0 || row.row >= _length - 1 || row.steppingStones == null || row.steppingStoneColumns == null || lava.ContainsKey(row.row))
                     throw new InvalidOperationException($"Lava in '{name}' requires unique interior rows and stepping stones.");
+                foreach (var obstacle in movers)
+                    if (obstacle.movement == ObstacleMovement.Chase && obstacle.position.y == row.row)
+                        throw new InvalidOperationException($"Monster in '{name}' cannot start on a stepping-stone row.");
                 var columns = new HashSet<int>();
-                foreach (int x in row.steppingStoneColumns)
-                    if (x < -MapManager.HalfWidth || x > MapManager.HalfWidth || !columns.Add(x))
-                        throw new InvalidOperationException($"Invalid stepping stone in '{name}'.");
+                var routes = new HashSet<int>();
+                foreach (var stone in row.GetStones())
+                {
+                    if (stone == null || !Enum.IsDefined(typeof(SteppingStoneMovement), stone.movement) ||
+                        !float.IsFinite(stone.speed) || stone.speed <= 0f ||
+                        stone.column < -MapManager.HalfWidth || stone.column > MapManager.HalfWidth || !columns.Add(stone.column) ||
+                        stone.movement != SteppingStoneMovement.Stationary &&
+                        (Mathf.Abs(stone.direction) != 1 || stone.distance < 1 ||
+                        Mathf.Abs(stone.column + stone.direction * stone.distance) > MapManager.HalfWidth))
+                        throw new InvalidOperationException($"Invalid stepping stone in '{name}' at row {row.row}.");
+                    int end = stone.movement == SteppingStoneMovement.Stationary ? stone.column : stone.column + stone.direction * stone.distance;
+                    for (int x = Math.Min(stone.column, end); x <= Math.Max(stone.column, end); x++)
+                        if (!routes.Add(x) || blocked.Contains(new Vector2Int(x, row.row)))
+                            throw new InvalidOperationException($"Stepping-stone route in '{name}' overlaps another stone or obstacle at ({x}, {row.row}).");
+                }
+                if (columns.Count == 0) throw new InvalidOperationException($"Lava row {row.row} in '{name}' requires stepping stones.");
                 lava.Add(row.row, columns);
             }
             bool Safe(Vector2Int position) => !blocked.Contains(position) &&
@@ -105,10 +149,8 @@ namespace CrossTheBoard
                         (row == 0 || row == _length - 1 || lava.TryGetValue(row, out var stones) && !stones.Contains(x)))
                         throw new InvalidOperationException($"Pattern '{name}' needs a full floor, clear boundary rows and no obstacles in lava.");
                 }
-            foreach (var obstacle in _movingObstacles)
+            foreach (var obstacle in movers)
             {
-                if (obstacle.movement == ObstacleMovement.Chase && lava.ContainsKey(obstacle.position.y))
-                    throw new InvalidOperationException($"Monster in '{name}' cannot start on a stepping-stone row.");
                 if (obstacle.movement != ObstacleMovement.Patrol) continue;
                 for (int step = 1; step <= obstacle.distance; step++)
                 {
@@ -163,7 +205,7 @@ namespace CrossTheBoard
                 if (row?.steppingStoneColumns == null) continue;
                 for (int x = -MapManager.HalfWidth; x <= MapManager.HalfWidth; x++)
                 {
-                    Gizmos.color = Array.IndexOf(row.steppingStoneColumns, x) >= 0 ? _steppingStoneColor : _lavaColor;
+                    Gizmos.color = row.HasColumn(x) ? _steppingStoneColor : _lavaColor;
                     Gizmos.DrawCube(_ground.GetCellCenterWorld(new Vector3Int(x, row.row, 0)), new Vector3(0.85f, 0.85f, 0.01f));
                 }
             }
@@ -179,7 +221,7 @@ namespace CrossTheBoard
         }
     }
 
-    public enum ObstacleMovement { Patrol, Chase }
+    public enum ObstacleMovement { Patrol, Chase, None }
 
     [Serializable]
     public sealed class MovingObstacleDefinition

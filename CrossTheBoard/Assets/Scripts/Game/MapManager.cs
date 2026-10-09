@@ -89,11 +89,13 @@ namespace CrossTheBoard
             (!_obstacles.TryGetValue(position, out var obstacle) || !obstacle.BlocksMovement);
 
         public int GetContactDamage(Vector2Int position) =>
-            _obstacles.TryGetValue(position, out var obstacle) ? obstacle.Damage : 0;
+            _obstacles.TryGetValue(position, out var obstacle) && GetMovingObstacle(position)?.IsMoving != true
+                ? obstacle.Damage : 0;
 
         public void DamagePlayerAt(Vector2Int position)
         {
-            if (position == _player.Position && _obstacles.ContainsKey(position)) _player.Die();
+            if (position == _player.Position && _obstacles.ContainsKey(position) &&
+                GetMovingObstacle(position)?.IsMoving != true) _player.Die();
         }
 
         public bool IsLethal(Vector2Int position)
@@ -116,6 +118,9 @@ namespace CrossTheBoard
                 if (obstacle.Position == position) return obstacle;
             return null;
         }
+
+        private bool IsObstacleDestinationReserved(Vector2Int position) =>
+            _movingObstacles.Exists(obstacle => obstacle.IsMoving && obstacle.Destination == position);
 
         private bool HasGround(Vector2Int position) => position.x >= -HalfWidth && position.x <= HalfWidth &&
             GetPattern(position.y) != null;
@@ -270,7 +275,8 @@ namespace CrossTheBoard
                 if (random.NextDouble() < _coinChance && reachable.Contains(position))
                     TryPlaceCoin(position, 1, reachable);
                 else if (random.NextDouble() < _rewardChance && reachable.Contains(position) &&
-                    GetContactDamage(position) == 0 && !_coins.ContainsKey(position) && !_registeredCells.ContainsKey(position))
+                    !_obstacles.ContainsKey(position) && !IsObstacleDestinationReserved(position) &&
+                    !_coins.ContainsKey(position) && !_registeredCells.ContainsKey(position))
                 {
                     _rewards.Add(position, _rewardPoints);
                     CreateCollectibleView(position, _rewardSprite);
@@ -287,8 +293,8 @@ namespace CrossTheBoard
 
         private bool TryPlaceCoin(Vector2Int position, int amount, HashSet<Vector2Int> reachable)
         {
-            if (!CanStandOn(position) || GetContactDamage(position) > 0 || _registeredCells.ContainsKey(position) || _coins.ContainsKey(position) || _rewards.ContainsKey(position) ||
-                !reachable.Contains(position))
+            if (!CanStandOn(position) || _obstacles.ContainsKey(position) || _registeredCells.ContainsKey(position) || _coins.ContainsKey(position) || _rewards.ContainsKey(position) ||
+                IsObstacleDestinationReserved(position) || !reachable.Contains(position))
                 return false;
             _coins.Add(position, amount);
             CreateCollectibleView(position, _coinSprite);
@@ -320,7 +326,7 @@ namespace CrossTheBoard
             if (!CanStandOn(position) || position == _player.Position || _coins.ContainsKey(position) || _rewards.ContainsKey(position) || _registeredCells.ContainsKey(position))
                 return false;
             if (_obstacles.ContainsKey(position) ||
-                _movingObstacles.Exists(moving => moving.IsMoving && Vector3.Distance(moving.FromWorld, GetWorldPosition(position)) < 0.01f)) return false;
+                IsObstacleDestinationReserved(position)) return false;
             var obstacle = CreateTileObstacle(tile, position, transform);
             _obstacles.Add(position, obstacle);
             if (HasValidRoutes()) return true;
@@ -333,20 +339,17 @@ namespace CrossTheBoard
         {
             if (!_loaded || (to - from).sqrMagnitude != 1 || !CanStandOn(to) ||
                 _obstacles.ContainsKey(to) ||
-                _movingObstacles.Exists(obstacle => obstacle.IsMoving && Vector3.Distance(obstacle.FromWorld, GetWorldPosition(to)) < 0.01f) ||
+                IsObstacleDestinationReserved(to) ||
                 !_obstacles.TryGetValue(from, out var view)) return false;
             var moving = GetMovingObstacle(from);
             if (moving != null)
             {
                 if (moving.IsMoving) return false;
                 if (moving.Definition.movement == ObstacleMovement.Chase && _lavaRows.Contains(to.y)) return false;
-                _obstacles.Remove(from);
-                _obstacles.Add(to, view);
                 moving.FromWorld = view.transform.position;
-                moving.Position = to;
+                moving.Destination = to;
                 moving.MoveStartTime = Time.time;
                 moving.IsMoving = true;
-                DamagePlayerAt(to);
                 return true;
             }
             if (to == _player.Position || _coins.ContainsKey(to) || _rewards.ContainsKey(to) || _registeredCells.ContainsKey(to)) return false;
@@ -365,7 +368,8 @@ namespace CrossTheBoard
         public bool TryMoveSteppingStone(Vector2Int from, Vector2Int to)
         {
             if (!_loaded || from.y != to.y || Mathf.Abs(from.x - to.x) != 1 ||
-                to.x < -HalfWidth || to.x > HalfWidth || _obstacles.ContainsKey(to)) return false;
+                to.x < -HalfWidth || to.x > HalfWidth || _obstacles.ContainsKey(to) ||
+                IsObstacleDestinationReserved(to)) return false;
             var stone = _stoneViews.Find(candidate => candidate.Position == from);
             if (stone == null || stone.IsMoving || _registeredCells.ContainsKey(from) ||
                 _stoneViews.Exists(candidate => candidate != stone &&
@@ -412,9 +416,11 @@ namespace CrossTheBoard
                 {
                     var destination = position + direction;
                     if (!CanStandOn(destination) || playerPath && (GetContactDamage(destination) > 0 ||
+                        IsObstacleDestinationReserved(destination) ||
                         destination.y < state.z - PlayerController.MaxBackwardSteps) ||
                         chaser && _lavaRows.Contains(destination.y) ||
-                        movingObstacle && destination != target && GetMovingObstacle(destination) != null) continue;
+                        movingObstacle && (IsObstacleDestinationReserved(destination) ||
+                        destination != target && GetMovingObstacle(destination) != null)) continue;
                     var nextState = new Vector3Int(destination.x, destination.y, playerPath ? Math.Max(state.z, destination.y) : 0);
                     if (parents.ContainsKey(nextState)) continue;
                     parents.Add(nextState, state);
@@ -442,7 +448,7 @@ namespace CrossTheBoard
                 throw new ArgumentException("A cell trigger requires a stable ID.", nameof(definition));
             var position = definition.position;
             if (position.x < -HalfWidth || position.x > HalfWidth || IsLethal(position) ||
-                !CanMoveTo(position) || GetContactDamage(position) > 0 ||
+                !CanMoveTo(position) || _obstacles.ContainsKey(position) || IsObstacleDestinationReserved(position) ||
                 _coins.ContainsKey(position) || _rewards.ContainsKey(position) || _registeredCells.ContainsKey(position) ||
                 _loaded && position.y < _firstRow ||
                 _loaded && HasGround(position) && !GetReachableCells().Contains(position))
@@ -809,7 +815,9 @@ namespace CrossTheBoard
                 bool onRemovedFloor = pair.Key.y >= pattern.FirstRow && pair.Key.y <= pattern.LastRow;
                 if (!belongsToPattern && !onRemovedFloor) continue;
                 bool preserve = moving != null && moving.Definition.movement == ObstacleMovement.Chase &&
-                    moving.HasStartedChasing && pattern.FirstRow <= _currentPatternFirstRow && !onRemovedFloor;
+                    moving.HasStartedChasing && pattern.FirstRow <= _currentPatternFirstRow &&
+                    (!onRemovedFloor || moving.IsMoving &&
+                        (moving.Destination.y < pattern.FirstRow || moving.Destination.y > pattern.LastRow));
                 if (preserve)
                 {
                     moving.View.transform.SetParent(transform, true);
@@ -851,9 +859,14 @@ namespace CrossTheBoard
                 if (obstacle.IsMoving)
                 {
                     float progress = Mathf.Clamp01((now - obstacle.MoveStartTime) / obstacle.Definition.stepInterval);
-                    obstacle.View.transform.position = Vector3.Lerp(obstacle.FromWorld, GetWorldPosition(obstacle.Position), progress);
+                    obstacle.View.transform.position = Vector3.Lerp(obstacle.FromWorld, GetWorldPosition(obstacle.Destination), progress);
                     if (progress < 1f) continue;
+                    _obstacles.Remove(obstacle.Position);
+                    _obstacles.Add(obstacle.Destination, obstacle.View);
+                    obstacle.Position = obstacle.Destination;
                     obstacle.IsMoving = false;
+                    DamagePlayerAt(obstacle.Position);
+                    if (GameStateManager.Instance.State != GameState.Playing) return;
                 }
                 if (now < obstacle.NextMoveTime) continue;
                 var definition = obstacle.Definition;
@@ -861,8 +874,8 @@ namespace CrossTheBoard
                 Vector2Int next;
                 if (definition.movement == ObstacleMovement.Chase)
                 {
-                    if (!obstacle.HasStartedChasing) continue;
-                    if (!TryGetNextStep(obstacle.Position, _player.Position, out next)) continue;
+                    if (!obstacle.HasStartedChasing || !TryGetNextStep(obstacle.Position, _player.Position, out next))
+                        continue;
                 }
                 else
                 {
@@ -872,8 +885,8 @@ namespace CrossTheBoard
                     else if (step == 0) obstacle.Direction = 1;
                     next = obstacle.Position + definition.direction * obstacle.Direction;
                 }
-                if (!TryMoveObstacle(obstacle.Position, next) && definition.movement == ObstacleMovement.Patrol)
-                    obstacle.Direction = -obstacle.Direction;
+                if (TryMoveObstacle(obstacle.Position, next)) obstacle.MoveStartTime = now;
+                else if (definition.movement == ObstacleMovement.Patrol) obstacle.Direction = -obstacle.Direction;
             }
             DamagePlayerAt(_player.Position);
         }
@@ -914,6 +927,7 @@ namespace CrossTheBoard
             public bool IsMoving;
             public Vector2Int Origin;
             public Vector2Int Position;
+            public Vector2Int Destination;
             public int Direction = 1;
             public float NextMoveTime;
             public bool HasStartedChasing;

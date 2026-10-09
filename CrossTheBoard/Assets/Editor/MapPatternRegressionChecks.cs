@@ -332,17 +332,17 @@ public static class MapPatternRegressionChecks
             "The changed-theme future patterns are already loaded before the player approaches a boundary.");
         int changes = 0;
         map.ThemeChanged += _ => changes++;
-        while (player.FurthestRow < meadow.Length) Require(player.TryMove(Vector2Int.up), "Reach the preloaded theme.");
+        while (player.FurthestRow < meadow.Length) Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.up), "Reach the preloaded theme.");
         Require(map.CurrentThemeId == "volcano" && changes == 1 && oldView != null &&
             ReferenceEquals(Field(placements[1], "View"), nextView) &&
             ReferenceEquals(Field(placements[2], "View"), futureView),
             "Crossing the boundary updates the active theme but never replaces preloaded prefabs.");
-        Require(player.TryMove(Vector2Int.down) && player.TryMove(Vector2Int.up) && changes == 1,
+        Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.down) && GameplayRegressionChecks.MovePlayer(player, Vector2Int.up) && changes == 1,
             "Backtracking does not replay the theme event.");
         map.RequestThemeChange("meadow");
         Require(ReferenceEquals(Field(placements[2], "View"), futureView), "An explicit theme request preserves future instances.");
         while (player.FurthestRow < meadow.Length + volcano.Length)
-            Require(player.TryMove(Vector2Int.up), "Reach the next streaming boundary.");
+            Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.up), "Reach the next streaming boundary.");
         Require(oldView == null && placements.Count == 3 &&
             ReferenceEquals(Field(placements[0], "View"), nextView) &&
             ReferenceEquals(Field(placements[1], "View"), futureView) &&
@@ -361,9 +361,9 @@ public static class MapPatternRegressionChecks
         Require(map.Rewards.Count > 0 && map.Coins.Count == 0, "Rewards are randomly generated independently of coins.");
         var position = new Vector2Int(0, 2);
         int points = map.GetRewardPoints(position);
-        Require(points == 100 && player.TryMove(Vector2Int.up) && map.GetRewardPoints(position) == 0 &&
+        Require(points == 100 && GameplayRegressionChecks.MovePlayer(player, Vector2Int.up) && map.GetRewardPoints(position) == 0 &&
             gameplay.ItemScore == points && gameplay.Score == 100 + points, "A reward adds item score and is consumed once.");
-        Require(player.TryMove(Vector2Int.down) && player.TryMove(Vector2Int.up) && gameplay.ItemScore == points,
+        Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.down) && GameplayRegressionChecks.MovePlayer(player, Vector2Int.up) && gameplay.ItemScore == points,
             "Revisiting a reward cannot farm points.");
         foreach (var reward in map.Rewards)
             Require(map.CanMoveTo(reward.Key) && !map.IsLethal(reward.Key) && !map.Coins.ContainsKey(reward.Key),
@@ -458,7 +458,7 @@ public static class MapPatternRegressionChecks
     private static void CheckMovingObstacles()
     {
         var map = StartMap(23);
-        Require(UnityEngine.Object.FindFirstObjectByType<PlayerController>().TryMove(Vector2Int.up), "Load the authored patrol row into the visible map.");
+        Require(GameplayRegressionChecks.MovePlayer(UnityEngine.Object.FindFirstObjectByType<PlayerController>(), Vector2Int.up), "Load the authored patrol row into the visible map.");
         var movers = (IList)Field(map, "_movingObstacles");
         int patrols = 0, chasers = 0;
         var positions = new Vector2Int[movers.Count];
@@ -476,7 +476,12 @@ public static class MapPatternRegressionChecks
                     map.TryGetNextStep(positions[i], target, out expectedSteps[i]);
             else shouldMove[i] = true;
         }
-        Invoke(map, "AdvanceMovingObstacles", float.MaxValue);
+        Invoke(map, "AdvanceMovingObstacles", 0f);
+        for (int i = 0; i < movers.Count; i++)
+            Require((Vector2Int)Field(movers[i], "Position") == positions[i] &&
+                (map.GetContactDamage(positions[i]) == 0) == (bool)Field(movers[i], "IsMoving"),
+                "Moving obstacles disable contact while stationary monsters retain their damage.");
+        Invoke(map, "AdvanceMovingObstacles", 2f);
         for (int i = 0; i < movers.Count; i++)
         {
             var definition = (MovingObstacleDefinition)Field(movers[i], "Definition");
@@ -487,8 +492,9 @@ public static class MapPatternRegressionChecks
                 continue;
             }
             Require(definition.position == authoredPositions[i] && position != positions[i] && map.GetContactDamage(positions[i]) == 0 &&
-                map.CanMoveTo(position) && map.GetContactDamage(position) > 0,
-                "Runtime movement relocates contact damage without changing prefab spawn coordinates.");
+                map.CanMoveTo(position) &&
+                (map.GetContactDamage(position) == 0) == (bool)Field(movers[i], "IsMoving"),
+                "Runtime movement commits coordinates before the next step disables contact again.");
             if (definition.movement == ObstacleMovement.Patrol)
             {
                 Require(position == positions[i] + definition.direction, "Patrol moves exactly one cell along its authored direction.");
@@ -509,18 +515,21 @@ public static class MapPatternRegressionChecks
         int moves = 0;
         while (player.Position != target && player.FurthestRow <= target.y)
             Require(++moves < MapManager.Width * MapManager.VisibleRows && map.TryGetNextStep(player.Position, target, out var next) &&
-                player.TryMove(next - player.Position), $"Follow a safe pattern path: {player.Position} -> {target}, frontier {player.FurthestRow}, health {player.Health}, state {GameStateManager.Instance.State}.");
+                GameplayRegressionChecks.MovePlayer(player, next - player.Position), $"Follow a safe pattern path: {player.Position} -> {target}, frontier {player.FurthestRow}, health {player.Health}, state {GameStateManager.Instance.State}.");
     }
 
     private static object Field(object target, string name) => target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public).GetValue(target);
     private static Vector2Int SafeTarget(MapManager map, int row)
     {
+        var player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
         var position = new Vector2Int(0, row);
-        if (!map.IsLethal(position) && map.CanMoveTo(position) && map.GetContactDamage(position) == 0) return position;
+        if (!map.IsLethal(position) && map.CanMoveTo(position) && map.GetContactDamage(position) == 0 &&
+            map.TryGetNextStep(player.Position, position, out _)) return position;
         for (int x = -MapManager.HalfWidth; x <= MapManager.HalfWidth; x++)
         {
             position = new Vector2Int(x, row);
-            if (!map.IsLethal(position) && map.CanMoveTo(position) && map.GetContactDamage(position) == 0) return position;
+            if (!map.IsLethal(position) && map.CanMoveTo(position) && map.GetContactDamage(position) == 0 &&
+                map.TryGetNextStep(player.Position, position, out _)) return position;
         }
         throw new InvalidOperationException($"Row {row} has no safe cell.");
     }

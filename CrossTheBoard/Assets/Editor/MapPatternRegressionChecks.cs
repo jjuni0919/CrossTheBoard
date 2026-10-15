@@ -476,7 +476,15 @@ public static class MapPatternRegressionChecks
                     map.TryGetNextStep(positions[i], target, out expectedSteps[i]);
             else shouldMove[i] = true;
         }
-        Invoke(map, "AdvanceMovingObstacles", float.MaxValue);
+        float started = Time.time;
+        Invoke(map, "AdvanceMovingObstacles", started);
+        float duration = 0f;
+        for (int i = 0; i < movers.Count; i++)
+        {
+            Require((Vector2Int)Field(movers[i], "Position") == positions[i], "An animation start preserves the current occupied coordinate.");
+            duration = Mathf.Max(duration, ((MovingObstacleDefinition)Field(movers[i], "Definition")).stepInterval);
+        }
+        Invoke(map, "AdvanceMovingObstacles", started + duration);
         for (int i = 0; i < movers.Count; i++)
         {
             var definition = (MovingObstacleDefinition)Field(movers[i], "Definition");

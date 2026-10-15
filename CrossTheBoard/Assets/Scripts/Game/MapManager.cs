@@ -320,7 +320,7 @@ namespace CrossTheBoard
             if (!CanStandOn(position) || position == _player.Position || _coins.ContainsKey(position) || _rewards.ContainsKey(position) || _registeredCells.ContainsKey(position))
                 return false;
             if (_obstacles.ContainsKey(position) ||
-                _movingObstacles.Exists(moving => moving.IsMoving && Vector3.Distance(moving.FromWorld, GetWorldPosition(position)) < 0.01f)) return false;
+                _movingObstacles.Exists(moving => moving.IsMoving && moving.Destination == position)) return false;
             var obstacle = CreateTileObstacle(tile, position, transform);
             _obstacles.Add(position, obstacle);
             if (HasValidRoutes()) return true;
@@ -330,23 +330,24 @@ namespace CrossTheBoard
         }
 
         public bool TryMoveObstacle(Vector2Int from, Vector2Int to)
+            => TryMoveObstacle(from, to, Time.time);
+
+        private bool TryMoveObstacle(Vector2Int from, Vector2Int to, float now)
         {
             if (!_loaded || (to - from).sqrMagnitude != 1 || !CanStandOn(to) ||
                 _obstacles.ContainsKey(to) ||
-                _movingObstacles.Exists(obstacle => obstacle.IsMoving && Vector3.Distance(obstacle.FromWorld, GetWorldPosition(to)) < 0.01f) ||
+                _movingObstacles.Exists(obstacle => obstacle.IsMoving && obstacle.Destination == to) ||
                 !_obstacles.TryGetValue(from, out var view)) return false;
             var moving = GetMovingObstacle(from);
             if (moving != null)
             {
                 if (moving.IsMoving) return false;
                 if (moving.Definition.movement == ObstacleMovement.Chase && _lavaRows.Contains(to.y)) return false;
-                _obstacles.Remove(from);
-                _obstacles.Add(to, view);
                 moving.FromWorld = view.transform.position;
-                moving.Position = to;
-                moving.MoveStartTime = Time.time;
+                moving.Destination = to;
+                moving.MoveStartTime = now;
+                moving.NextMoveTime = now + moving.Definition.stepInterval;
                 moving.IsMoving = true;
-                DamagePlayerAt(to);
                 return true;
             }
             if (to == _player.Position || _coins.ContainsKey(to) || _rewards.ContainsKey(to) || _registeredCells.ContainsKey(to)) return false;
@@ -365,7 +366,8 @@ namespace CrossTheBoard
         public bool TryMoveSteppingStone(Vector2Int from, Vector2Int to)
         {
             if (!_loaded || from.y != to.y || Mathf.Abs(from.x - to.x) != 1 ||
-                to.x < -HalfWidth || to.x > HalfWidth || _obstacles.ContainsKey(to)) return false;
+                to.x < -HalfWidth || to.x > HalfWidth || _obstacles.ContainsKey(to) ||
+                _movingObstacles.Exists(obstacle => obstacle.IsMoving && obstacle.Destination == to)) return false;
             var stone = _stoneViews.Find(candidate => candidate.Position == from);
             if (stone == null || stone.IsMoving || _registeredCells.ContainsKey(from) ||
                 _stoneViews.Exists(candidate => candidate != stone &&
@@ -414,7 +416,8 @@ namespace CrossTheBoard
                     if (!CanStandOn(destination) || playerPath && (GetContactDamage(destination) > 0 ||
                         destination.y < state.z - PlayerController.MaxBackwardSteps) ||
                         chaser && _lavaRows.Contains(destination.y) ||
-                        movingObstacle && destination != target && GetMovingObstacle(destination) != null) continue;
+                        movingObstacle && (destination != target && GetMovingObstacle(destination) != null ||
+                            _movingObstacles.Exists(obstacle => obstacle.IsMoving && obstacle.Destination == destination))) continue;
                     var nextState = new Vector3Int(destination.x, destination.y, playerPath ? Math.Max(state.z, destination.y) : 0);
                     if (parents.ContainsKey(nextState)) continue;
                     parents.Add(nextState, state);
@@ -806,7 +809,8 @@ namespace CrossTheBoard
             {
                 var moving = GetMovingObstacle(pair.Key);
                 bool belongsToPattern = pair.Value.transform.IsChildOf(pattern.View.transform);
-                bool onRemovedFloor = pair.Key.y >= pattern.FirstRow && pair.Key.y <= pattern.LastRow;
+                bool onRemovedFloor = pair.Key.y >= pattern.FirstRow && pair.Key.y <= pattern.LastRow ||
+                    moving != null && moving.IsMoving && moving.Destination.y >= pattern.FirstRow && moving.Destination.y <= pattern.LastRow;
                 if (!belongsToPattern && !onRemovedFloor) continue;
                 bool preserve = moving != null && moving.Definition.movement == ObstacleMovement.Chase &&
                     moving.HasStartedChasing && pattern.FirstRow <= _currentPatternFirstRow && !onRemovedFloor;
@@ -851,9 +855,14 @@ namespace CrossTheBoard
                 if (obstacle.IsMoving)
                 {
                     float progress = Mathf.Clamp01((now - obstacle.MoveStartTime) / obstacle.Definition.stepInterval);
-                    obstacle.View.transform.position = Vector3.Lerp(obstacle.FromWorld, GetWorldPosition(obstacle.Position), progress);
+                    obstacle.View.transform.position = Vector3.Lerp(obstacle.FromWorld, GetWorldPosition(obstacle.Destination), progress);
                     if (progress < 1f) continue;
+                    _obstacles.Remove(obstacle.Position);
+                    obstacle.Position = obstacle.Destination;
+                    _obstacles.Add(obstacle.Position, obstacle.View);
                     obstacle.IsMoving = false;
+                    DamagePlayerAt(obstacle.Position);
+                    if (GameStateManager.Instance.State != GameState.Playing) return;
                 }
                 if (now < obstacle.NextMoveTime) continue;
                 var definition = obstacle.Definition;
@@ -872,7 +881,7 @@ namespace CrossTheBoard
                     else if (step == 0) obstacle.Direction = 1;
                     next = obstacle.Position + definition.direction * obstacle.Direction;
                 }
-                if (!TryMoveObstacle(obstacle.Position, next) && definition.movement == ObstacleMovement.Patrol)
+                if (!TryMoveObstacle(obstacle.Position, next, now) && definition.movement == ObstacleMovement.Patrol)
                     obstacle.Direction = -obstacle.Direction;
             }
             DamagePlayerAt(_player.Position);
@@ -914,6 +923,7 @@ namespace CrossTheBoard
             public bool IsMoving;
             public Vector2Int Origin;
             public Vector2Int Position;
+            public Vector2Int Destination;
             public int Direction = 1;
             public float NextMoveTime;
             public bool HasStartedChasing;

@@ -89,11 +89,13 @@ namespace CrossTheBoard
             (!_obstacles.TryGetValue(position, out var obstacle) || !obstacle.BlocksMovement);
 
         public int GetContactDamage(Vector2Int position) =>
-            _obstacles.TryGetValue(position, out var obstacle) ? obstacle.Damage : 0;
+            _obstacles.TryGetValue(position, out var obstacle) && GetMovingObstacle(position)?.IsMoving != true
+                ? obstacle.Damage : 0;
 
         public void DamagePlayerAt(Vector2Int position)
         {
-            if (position == _player.Position && _obstacles.ContainsKey(position)) _player.Die();
+            if (position == _player.Position && _obstacles.ContainsKey(position) &&
+                GetMovingObstacle(position)?.IsMoving != true) _player.Die();
         }
 
         public bool IsLethal(Vector2Int position)
@@ -116,6 +118,9 @@ namespace CrossTheBoard
                 if (obstacle.Position == position) return obstacle;
             return null;
         }
+
+        private bool IsObstacleDestinationReserved(Vector2Int position) =>
+            _movingObstacles.Exists(obstacle => obstacle.IsMoving && obstacle.Destination == position);
 
         private bool HasGround(Vector2Int position) => position.x >= -HalfWidth && position.x <= HalfWidth &&
             GetPattern(position.y) != null;
@@ -270,7 +275,8 @@ namespace CrossTheBoard
                 if (random.NextDouble() < _coinChance && reachable.Contains(position))
                     TryPlaceCoin(position, 1, reachable);
                 else if (random.NextDouble() < _rewardChance && reachable.Contains(position) &&
-                    GetContactDamage(position) == 0 && !_coins.ContainsKey(position) && !_registeredCells.ContainsKey(position))
+                    !_obstacles.ContainsKey(position) && !IsObstacleDestinationReserved(position) &&
+                    !_coins.ContainsKey(position) && !_registeredCells.ContainsKey(position))
                 {
                     _rewards.Add(position, _rewardPoints);
                     CreateCollectibleView(position, _rewardSprite);
@@ -287,8 +293,8 @@ namespace CrossTheBoard
 
         private bool TryPlaceCoin(Vector2Int position, int amount, HashSet<Vector2Int> reachable)
         {
-            if (!CanStandOn(position) || GetContactDamage(position) > 0 || _registeredCells.ContainsKey(position) || _coins.ContainsKey(position) || _rewards.ContainsKey(position) ||
-                !reachable.Contains(position))
+            if (!CanStandOn(position) || _obstacles.ContainsKey(position) || _registeredCells.ContainsKey(position) || _coins.ContainsKey(position) || _rewards.ContainsKey(position) ||
+                IsObstacleDestinationReserved(position) || !reachable.Contains(position))
                 return false;
             _coins.Add(position, amount);
             CreateCollectibleView(position, _coinSprite);
@@ -319,8 +325,7 @@ namespace CrossTheBoard
             EnsureContentInitialized();
             if (!CanStandOn(position) || position == _player.Position || _coins.ContainsKey(position) || _rewards.ContainsKey(position) || _registeredCells.ContainsKey(position))
                 return false;
-            if (_obstacles.ContainsKey(position) ||
-                _movingObstacles.Exists(moving => moving.IsMoving && moving.Destination == position)) return false;
+            if (_obstacles.ContainsKey(position) || IsObstacleDestinationReserved(position)) return false;
             var obstacle = CreateTileObstacle(tile, position, transform);
             _obstacles.Add(position, obstacle);
             if (HasValidRoutes()) return true;
@@ -336,7 +341,7 @@ namespace CrossTheBoard
         {
             if (!_loaded || (to - from).sqrMagnitude != 1 || !CanStandOn(to) ||
                 _obstacles.ContainsKey(to) ||
-                _movingObstacles.Exists(obstacle => obstacle.IsMoving && obstacle.Destination == to) ||
+                IsObstacleDestinationReserved(to) ||
                 !_obstacles.TryGetValue(from, out var view)) return false;
             var moving = GetMovingObstacle(from);
             if (moving != null)
@@ -367,7 +372,7 @@ namespace CrossTheBoard
         {
             if (!_loaded || from.y != to.y || Mathf.Abs(from.x - to.x) != 1 ||
                 to.x < -HalfWidth || to.x > HalfWidth || _obstacles.ContainsKey(to) ||
-                _movingObstacles.Exists(obstacle => obstacle.IsMoving && obstacle.Destination == to)) return false;
+                IsObstacleDestinationReserved(to)) return false;
             var stone = _stoneViews.Find(candidate => candidate.Position == from);
             if (stone == null || stone.IsMoving || _registeredCells.ContainsKey(from) ||
                 _stoneViews.Exists(candidate => candidate != stone &&
@@ -417,7 +422,7 @@ namespace CrossTheBoard
                         destination.y < state.z - PlayerController.MaxBackwardSteps) ||
                         chaser && _lavaRows.Contains(destination.y) ||
                         movingObstacle && (destination != target && GetMovingObstacle(destination) != null ||
-                            _movingObstacles.Exists(obstacle => obstacle.IsMoving && obstacle.Destination == destination))) continue;
+                            IsObstacleDestinationReserved(destination))) continue;
                     var nextState = new Vector3Int(destination.x, destination.y, playerPath ? Math.Max(state.z, destination.y) : 0);
                     if (parents.ContainsKey(nextState)) continue;
                     parents.Add(nextState, state);
@@ -445,7 +450,7 @@ namespace CrossTheBoard
                 throw new ArgumentException("A cell trigger requires a stable ID.", nameof(definition));
             var position = definition.position;
             if (position.x < -HalfWidth || position.x > HalfWidth || IsLethal(position) ||
-                !CanMoveTo(position) || GetContactDamage(position) > 0 ||
+                !CanMoveTo(position) || _obstacles.ContainsKey(position) || IsObstacleDestinationReserved(position) ||
                 _coins.ContainsKey(position) || _rewards.ContainsKey(position) || _registeredCells.ContainsKey(position) ||
                 _loaded && position.y < _firstRow ||
                 _loaded && HasGround(position) && !GetReachableCells().Contains(position))

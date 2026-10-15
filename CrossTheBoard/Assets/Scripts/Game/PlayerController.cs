@@ -24,7 +24,7 @@ namespace CrossTheBoard
         public event Action<Vector2Int, Vector2Int> Moved;
         public event Action<int> HealthChanged;
         private MapManager _map;
-        private readonly Queue<Vector2Int> _moveInputs = new();
+        private readonly Queue<Vector2Int> _moveInputs = new(1);
         private float _nextMoveTime;
         private float _nextInputTime;
         private float _nextDamageTime;
@@ -138,18 +138,17 @@ namespace CrossTheBoard
 
         private void QueueMove(Vector2Int direction)
         {
-            if (Time.time >= _nextInputTime)
-                _moveInputs.Enqueue(direction);
+            if (Time.time < _nextInputTime)
+                return;
+            _moveInputs.Clear();
+            _moveInputs.Enqueue(direction);
         }
 
         private void ProcessMoveQueue()
         {
-            while (_moveInputs.Count > 0 && Time.time >= _nextMoveTime && isActiveAndEnabled &&
+            if (_moveInputs.Count > 0 && Time.time >= _nextMoveTime && isActiveAndEnabled &&
                 GameStateManager.Instance.State == GameState.Playing)
-            {
-                if (TryMove(_moveInputs.Dequeue()))
-                    break;
-            }
+                TryMove(_moveInputs.Dequeue());
         }
 
         public bool TryMove(Vector2Int direction)

@@ -40,19 +40,19 @@ public static class GameplayRegressionChecks
             Require(player.Position == new Vector2Int(0, 1) && player.FurthestRow == 1, "Start in the centre of row one.");
             Require(gameplay.Score == 0 && events == 1 && lastScore == 0, "Publish initial zero score.");
 
-            Require(player.TryMove(Vector2Int.down), "One backward step from the starting frontier is allowed.");
+            Require(MovePlayer(player, Vector2Int.down), "One backward step from the starting frontier is allowed.");
             Require(player.Position == Vector2Int.zero, "One backward step reaches row zero.");
-            Require(!player.TryMove(Vector2Int.down), "A second backward step is blocked.");
-            Require(player.TryMove(Vector2Int.right), "Sideways movement behind the frontier is allowed.");
-            Require(!player.TryMove(Vector2Int.down), "Moving sideways does not reset the backward allowance.");
+            Require(!MovePlayer(player, Vector2Int.down), "A second backward step is blocked.");
+            Require(MovePlayer(player, Vector2Int.right), "Sideways movement behind the frontier is allowed.");
+            Require(!MovePlayer(player, Vector2Int.down), "Moving sideways does not reset the backward allowance.");
             Invoke(camera, "LateUpdate");
             Require(camera.transform.position == startCamera, "Backward/sideways movement must not move the camera.");
-            Require(player.TryMove(Vector2Int.up), "Return to the old frontier.");
+            Require(MovePlayer(player, Vector2Int.up), "Return to the old frontier.");
             Invoke(camera, "LateUpdate");
             Require(camera.transform.position == startCamera && gameplay.Score == 0 && events == 1,
                 "Returning does not move the camera or award points.");
 
-            Require(player.TryMove(Vector2Int.up), "Advance into a new row.");
+            Require(MovePlayer(player, Vector2Int.up), "Advance into a new row.");
             Invoke(camera, "LateUpdate");
             Vector3 advancedCamera = camera.transform.position;
             Require(player.FurthestRow == 2 && gameplay.ForwardScore == 100 && gameplay.Score == 100,
@@ -66,22 +66,22 @@ public static class GameplayRegressionChecks
 
             for (int i = 0; i < 3; i++)
             {
-                Require(player.TryMove(Vector2Int.down), "One step behind the new frontier is allowed.");
-                Require(!player.TryMove(Vector2Int.down), "Two steps behind the frontier are blocked.");
+                Require(MovePlayer(player, Vector2Int.down), "One step behind the new frontier is allowed.");
+                Require(!MovePlayer(player, Vector2Int.down), "Two steps behind the frontier are blocked.");
                 Invoke(camera, "LateUpdate");
                 Require(camera.transform.position == advancedCamera && GetGroundBounds(map) == advancedBounds,
                     "Camera and map stay fixed while backtracking.");
-                Require(player.TryMove(Vector2Int.up), "Return from backtracking.");
+                Require(MovePlayer(player, Vector2Int.up), "Return from backtracking.");
                 Invoke(camera, "LateUpdate");
                 Require(camera.transform.position == advancedCamera && gameplay.Score == 100 && events == 2,
                     "Repeated backtracking cannot farm score or shift the camera.");
             }
 
-            Require(player.TryMove(Vector2Int.up), "Advance to a second new row.");
+            Require(MovePlayer(player, Vector2Int.up), "Advance to a second new row.");
             Require(gameplay.Score == 200 && gameplay.ForwardScore == 200, "Second new row awards another 100 points.");
-            Require(player.TryMove(Vector2Int.right) && player.TryMove(Vector2Int.right), "Reach the right edge.");
-            Require(player.TryMove(Vector2Int.right), "Reach the fourth column to the right.");
-            Require(!player.TryMove(Vector2Int.right) && player.Position.x == 4, "Nine-column right boundary is enforced.");
+            Require(MovePlayer(player, Vector2Int.right) && MovePlayer(player, Vector2Int.right), "Reach the right edge.");
+            Require(MovePlayer(player, Vector2Int.right), "Reach the fourth column to the right.");
+            Require(!MovePlayer(player, Vector2Int.right) && player.Position.x == 4, "Nine-column right boundary is enforced.");
             Require(gameplay.Score == 200, "Lateral movement never awards distance points.");
 
             gameplay.AddGoldScore(25);
@@ -97,22 +97,23 @@ public static class GameplayRegressionChecks
             Require(rejectedNegative && gameplay.Score == 275, "Negative bonus values are rejected without changing score.");
 
             state.SetState(GameState.Paused);
-            Require(!player.TryMove(Vector2Int.up), "Paused movement is blocked.");
+            Require(!MovePlayer(player, Vector2Int.up), "Paused movement is blocked.");
             gameplay.AddGoldScore(100);
             Require(gameplay.Score == 275, "Paused collection does not award score.");
             state.SetState(GameState.Playing);
             state.SetState(GameState.GameOver);
             gameplay.AddItemScore(100);
-            Require(!player.TryMove(Vector2Int.up) && gameplay.Score == 275, "Completed runs cannot gain movement or collection score.");
+            Require(!MovePlayer(player, Vector2Int.up) && gameplay.Score == 275, "Completed runs cannot gain movement or collection score.");
 
             CheckCameraViewport(camera);
             CheckMapInitialization();
             CheckMapContent();
+            CheckPlayerMovementTiming();
             CheckDamageObstacles();
             CheckChaserLifetimeAndBridges();
             CheckMovingSteppingStones();
             CheckSmoothObstacleContact();
-            Debug.Log("[GameplayRegressionChecks] PASS: movement/camera/score, map routes, lava, stepping stones, terrain, obstacle arrival coordinates/contact/reservations, chasing monsters, rolling rocks, previous-pattern retention and monster lifetime/river barriers.");
+            Debug.Log("[GameplayRegressionChecks] PASS: player movement delay/input-ignore/single-slot latest input, movement/camera/score, map routes, lava, stepping stones, terrain, speed-based arrival, no transit contact, locked destinations, continuous obstacle movement, reservations, monster lifetime/river barriers.");
             EditorApplication.Exit(0);
         }
         catch (Exception exception)
@@ -126,6 +127,103 @@ public static class GameplayRegressionChecks
     {
         return new BoundsInt(-MapManager.HalfWidth, (int)Field(map, "_firstRow"), 0,
             MapManager.Width, (int)Field(map, "_lastRow") - (int)Field(map, "_firstRow") + 1, 1);
+    }
+
+    public static bool MovePlayer(PlayerController player, Vector2Int direction)
+    {
+        // Edit Mode does not advance game time; route checks model completed movement intervals.
+        SetField(player, "_nextMoveTime", Time.time);
+        return player.TryMove(direction);
+    }
+
+    private static void CheckPlayerMovementTiming()
+    {
+        var map = StartMap(Array.Empty<HazardRowDefinition>());
+        var player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
+        var inputs = Field(player, "_moveInputs").As<System.Collections.Generic.Queue<Vector2Int>>();
+        Require(player.TryMove(Vector2Int.right) && !player.TryMove(Vector2Int.up) &&
+            Mathf.Approximately((float)Field(player, "_nextMoveTime") - Time.time, .3f) &&
+            Mathf.Approximately((float)Field(player, "_nextInputTime") - Time.time, .1f),
+            "The first move starts the 0.3-second delay and 0.1-second input-ignore window.");
+        SetField(player, "_swipeStart", Vector2.zero);
+        Invoke(player, "QueueMove", Vector2Int.up);
+        Invoke(player, "MoveFromSwipe", new Vector2(-10000f, 0f));
+        SetField(player, "_nextInputTime", Time.time + .001f);
+        Invoke(player, "QueueMove", Vector2Int.up);
+        Require(inputs.Count == 0, "Early key directions and swipes are discarded until the input deadline.");
+        SetField(player, "_nextInputTime", Time.time);
+        Invoke(player, "QueueMove", Vector2Int.up);
+        Invoke(player, "MoveFromSwipe", new Vector2(-10000f, 0f));
+        Invoke(player, "ProcessMoveQueue");
+        Require(inputs.Count == 1 && inputs.Peek() == Vector2Int.left && player.Position == Vector2Int.right,
+            "A newer swipe replaces the pending key direction without bypassing the movement deadline.");
+        for (int i = 0; i < 20; i++)
+            Invoke(player, "QueueMove", i % 2 == 0 ? Vector2Int.down : Vector2Int.up);
+        Require(inputs.Count == 1 && inputs.Peek() == Vector2Int.up, "Repeated keys keep only the latest direction in one slot.");
+        SetField(player, "_nextInputTime", Time.time + .001f);
+        Invoke(player, "MoveFromSwipe", new Vector2(-10000f, 0f));
+        Require(inputs.Count == 1 && inputs.Peek() == Vector2Int.up, "Ignored input does not erase or replace pending movement.");
+        SetField(player, "_nextMoveTime", Time.time);
+        Invoke(player, "ProcessMoveQueue");
+        Invoke(player, "QueueMove", Vector2Int.left);
+        Require(player.Position == new Vector2Int(1, 1) && inputs.Count == 0 && !player.TryMove(Vector2Int.up),
+            "The last accepted direction runs once and starts both timing windows again.");
+        SetField(player, "_nextMoveTime", Time.time);
+        Invoke(player, "ProcessMoveQueue");
+        Require(player.Position == new Vector2Int(1, 1), "Replaced directions never execute later.");
+        SetField(player, "_nextInputTime", Time.time);
+        Invoke(player, "QueueMove", Vector2Int.up);
+        Invoke(player, "MoveFromSwipe", new Vector2(-10000f, 0f));
+        GameStateManager.Instance.SetState(GameState.Paused);
+        Invoke(player, "Update");
+        Invoke(player, "ProcessMoveQueue");
+        Require(player.Position == new Vector2Int(1, 1) && inputs.Count == 1 && inputs.Peek() == Vector2Int.left,
+            "Pause preserves the latest pending direction without executing it.");
+        GameStateManager.Instance.SetState(GameState.Playing);
+        Invoke(player, "ProcessMoveQueue");
+        Require(player.Position == Vector2Int.up && inputs.Count == 0, "The pending direction resumes once without fresh input.");
+
+        SetField(player, "_nextInputTime", Time.time);
+        Invoke(player, "QueueMove", Vector2Int.up);
+        Invoke(player, "QueueMove", Vector2Int.right);
+        var terrain = AssetDatabase.LoadAssetAtPath<TileBase>("Assets/Gameplay/ObstacleTile.asset");
+        Require(map.TrySetObstacle(new Vector2Int(1, 1), terrain), "Block the latest direction after it was stored.");
+        SetField(player, "_nextMoveTime", Time.time);
+        float readyTime = (float)Field(player, "_nextMoveTime");
+        Invoke(player, "ProcessMoveQueue");
+        Require(player.Position == Vector2Int.up && inputs.Count == 0 && (float)Field(player, "_nextMoveTime") == readyTime,
+            "A blocked latest direction is discarded without replaying the replaced direction or adding a delay.");
+        Invoke(player, "QueueMove", Vector2Int.up);
+        Invoke(player, "ProcessMoveQueue");
+        Require(player.Position == new Vector2Int(0, 2), "A valid input can move immediately after a blocked attempt.");
+        SetField(player, "_nextInputTime", Time.time);
+        Invoke(player, "QueueMove", Vector2Int.left);
+        Invoke(player, "QueueMove", Vector2Int.up);
+        float moveDeadline = (float)Field(player, "_nextMoveTime");
+        float inputDeadline = (float)Field(player, "_nextInputTime");
+        Invoke(player, "RideStone", new Vector2Int(-2, 2), Vector3.left * .5f);
+        Require(inputs.Count == 1 && inputs.Peek() == Vector2Int.up && (float)Field(player, "_nextMoveTime") == moveDeadline &&
+            (float)Field(player, "_nextInputTime") == inputDeadline, "Transport preserves the pending direction and both timers.");
+        var spike = AssetDatabase.LoadAssetAtPath<DamageTile>("Assets/Gameplay/SpikeTile.asset");
+        Require(map.TrySetObstacle(new Vector2Int(-2, 3), spike), "Make the pending move fatal.");
+        SetField(player, "_nextMoveTime", Time.time);
+        Invoke(player, "ProcessMoveQueue");
+        Require(player.Health == 0 && inputs.Count == 0 && player.Position == new Vector2Int(-2, 3),
+            "The pending move uses the transported position and still triggers contact death.");
+        player.Initialize(map);
+        GameStateManager.Instance.SetState(GameState.Playing);
+        Invoke(player, "QueueMove", Vector2Int.up);
+        Require(player.TakeDamage(player.MaxHealth) && inputs.Count == 0, "Death clears a pending move before its execution.");
+        player.Initialize(map);
+        GameStateManager.Instance.SetState(GameState.Playing);
+        Invoke(player, "QueueMove", Vector2Int.up);
+        player.Initialize(map);
+        Require(inputs.Count == 0 && player.TryMove(Vector2Int.left), "Initialization clears old input and restores immediate movement.");
+        SetField(player, "_nextInputTime", Time.time);
+        Invoke(player, "QueueMove", Vector2Int.up);
+        player.gameObject.SetActive(false);
+        Invoke(player, "OnDisable");
+        Require(inputs.Count == 0, "Disabling the player clears pending input.");
     }
 
     private static void ClearObstacles(MapManager map)
@@ -282,8 +380,8 @@ public static class GameplayRegressionChecks
         row.onReached.AddListener(() => { if (map.TrySetObstacle(new Vector2Int(-2, 3), tile)) spawns++; });
         map.RegisterRowTrigger(row);
         var player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
-        Require(player.TryMove(Vector2Int.up) && spawns == 1, "Existing row event can spawn an obstacle.");
-        Require(player.TryMove(Vector2Int.down) && player.TryMove(Vector2Int.up) && spawns == 1, "Revisiting the spawn row does not duplicate the obstacle.");
+        Require(MovePlayer(player, Vector2Int.up) && spawns == 1, "Existing row event can spawn an obstacle.");
+        Require(MovePlayer(player, Vector2Int.down) && MovePlayer(player, Vector2Int.up) && spawns == 1, "Revisiting the spawn row does not duplicate the obstacle.");
 
         var hazards = new[] { new HazardRowDefinition { row = 3, steppingStoneColumns = new[] { 0 } } };
         map = StartMap(hazards);
@@ -300,25 +398,25 @@ public static class GameplayRegressionChecks
             !map.TryMoveSteppingStone(new Vector2Int(1, 3), new Vector2Int(0, 3)), "A fixed cell trigger cannot be stranded.");
         map = StartMap(new[] { new HazardRowDefinition { row = 3, steppingStoneColumns = new[] { 0 } } });
         player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
-        Require(player.TryMove(Vector2Int.up) && player.TryMove(Vector2Int.up) && player.TryMove(Vector2Int.up), "Reach a safe platform.");
+        Require(MovePlayer(player, Vector2Int.up) && MovePlayer(player, Vector2Int.up) && MovePlayer(player, Vector2Int.up), "Reach a safe platform.");
         Require(map.TryMoveSteppingStone(player.Position, player.Position + Vector2Int.right) &&
             player.Position == new Vector2Int(1, 3) && GameStateManager.Instance.State == GameState.Playing,
             "The player is carried without being killed by the logical destination.");
         Invoke(map, "AdvanceSteppingStones", float.MaxValue);
         Require(player.transform.position == map.GetWorldPosition(player.Position), "The carried player arrives at the platform centre.");
         int score = UnityEngine.Object.FindFirstObjectByType<GameplayController>().Score;
-        Require(player.TryMove(Vector2Int.right) && GameStateManager.Instance.State == GameState.GameOver &&
-            !player.TryMove(Vector2Int.up) && UnityEngine.Object.FindFirstObjectByType<GameplayController>().Score == score,
+        Require(MovePlayer(player, Vector2Int.right) && GameStateManager.Instance.State == GameState.GameOver &&
+            !MovePlayer(player, Vector2Int.up) && UnityEngine.Object.FindFirstObjectByType<GameplayController>().Score == score,
             "Entering a lethal cell ends the run without granting further points.");
 
         map = StartMap(new[] { new HazardRowDefinition { row = 2, steppingStoneColumns = new[] { 0 } } });
         player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
         var camera = UnityEngine.Object.FindFirstObjectByType<GameplayCamera>();
         Invoke(camera, "Awake");
-        Require(player.TryMove(Vector2Int.up), "Reach the row before the lethal forward cell.");
+        Require(MovePlayer(player, Vector2Int.up), "Reach the row before the lethal forward cell.");
         Invoke(camera, "LateUpdate");
         Vector3 beforeDeath = camera.transform.position;
-        Require(player.TryMove(Vector2Int.right) && player.TryMove(Vector2Int.up) && GameStateManager.Instance.State == GameState.GameOver,
+        Require(MovePlayer(player, Vector2Int.right) && MovePlayer(player, Vector2Int.up) && GameStateManager.Instance.State == GameState.GameOver,
             "Enter a lethal cell in a new forward row.");
         Invoke(camera, "LateUpdate");
         Require(camera.transform.position == beforeDeath, "Death does not advance the camera beyond the loaded map frontier.");
@@ -346,7 +444,7 @@ public static class GameplayRegressionChecks
                 while (player.Position != target && player.FurthestRow <= frontier)
                 {
                     Require(++moves < MapManager.Width * MapManager.VisibleRows && map.TryGetNextStep(player.Position, target, out next) &&
-                        player.TryMove(next - player.Position), "Generated map can be traversed under the actual backward limit.");
+                        MovePlayer(player, next - player.Position), "Generated map can be traversed under the actual backward limit.");
                 }
                 foreach (var coin in map.Coins)
                     Require(map.CanMoveTo(coin.Key) && !map.IsLethal(coin.Key) &&
@@ -366,7 +464,7 @@ public static class GameplayRegressionChecks
         var player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
         int healthEvents = 0;
         player.HealthChanged += _ => healthEvents++;
-        Require(map.TrySetObstacle(Vector2Int.right, terrain) && !player.TryMove(Vector2Int.right) && player.Health == 3,
+        Require(map.TrySetObstacle(Vector2Int.right, terrain) && !MovePlayer(player, Vector2Int.right) && player.Health == 3,
             "Terrain blocks entry without killing a player on a different coordinate.");
         ClearObstacles(map);
         Require(map.TrySetObstacle(Vector2Int.up, spike) && map.CanMoveTo(Vector2Int.up),
@@ -375,12 +473,12 @@ public static class GameplayRegressionChecks
             !map.RegisterCellTrigger(new CellTriggerDefinition { id = "spike", position = Vector2Int.up }),
             "Damage cells cannot host coins or triggers.");
         SetField(player, "_nextDamageTime", float.PositiveInfinity);
-        Require(player.TryMove(Vector2Int.up) && player.Health == 0 && healthEvents == 1 &&
+        Require(MovePlayer(player, Vector2Int.up) && player.Health == 0 && healthEvents == 1 &&
             GameStateManager.Instance.State == GameState.GameOver &&
             UnityEngine.Object.FindFirstObjectByType<GameplayController>().Score == 0,
             "Entering an obstacle kills immediately despite damage immunity and grants no fatal-step points.");
         map.DamagePlayerAt(player.Position);
-        Require(!player.Die() && !player.TryMove(Vector2Int.up) && !player.TakeDamage(1) && healthEvents == 1,
+        Require(!player.Die() && !MovePlayer(player, Vector2Int.up) && !player.TakeDamage(1) && healthEvents == 1,
             "Repeated overlap settles death and health notification only once.");
         bool invalidDamage = false;
         try { player.TakeDamage(0); } catch (ArgumentOutOfRangeException) { invalidDamage = true; }
@@ -400,7 +498,7 @@ public static class GameplayRegressionChecks
         var chase = new MovingObstacleDefinition { position = new Vector2Int(0, 3), movement = ObstacleMovement.Chase };
         map = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { chase });
         player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
-        Require(player.TryMove(Vector2Int.up), "Approach the chasing monster.");
+        Require(MovePlayer(player, Vector2Int.up), "Approach the chasing monster.");
         SetField(player, "_nextDamageTime", float.PositiveInfinity);
         Invoke(map, "AdvanceMovingObstacles", 0f);
         Invoke(map, "AdvanceMovingObstacles", 2f);
@@ -434,10 +532,10 @@ public static class GameplayRegressionChecks
         var placements = (System.Collections.IList)Field(map, "_placedPatterns");
         var originalView = (MapPattern)Field(placements[0], "View");
         for (int column = 0; column < MapManager.HalfWidth; column++)
-            Require(player.TryMove(Vector2Int.left), "Keep the lifetime traversal separate from fatal monster contact.");
+            Require(MovePlayer(player, Vector2Int.left), "Keep the lifetime traversal separate from fatal monster contact.");
         for (int row = 1; row <= MapPattern.MaximumLength * 2; row++)
         {
-            Require(player.TryMove(Vector2Int.up), "Traverse two full pattern boundaries while the monster follows.");
+            Require(MovePlayer(player, Vector2Int.up), "Traverse two full pattern boundaries while the monster follows.");
             if (row == MapPattern.MaximumLength)
             {
                 Require(originalView != null && placements.Count == 3 && map.GetComponentsInChildren<MapPattern>().Length == 3,
@@ -453,9 +551,9 @@ public static class GameplayRegressionChecks
         var monsterPosition = (Vector2Int)Field(originalMonster, "Position");
         while (Math.Abs(player.Position.x - monsterPosition.x) + Math.Abs(player.Position.y - monsterPosition.y) <
             MapManager.MonsterDespawnDistance - 1)
-            Require(player.TryMove(Vector2Int.up) && movers.Contains(originalMonster), "A monster remains alive within seven cells.");
+            Require(MovePlayer(player, Vector2Int.up) && movers.Contains(originalMonster), "A monster remains alive within seven cells.");
         Require(movers.Contains(originalMonster), "A monster remains alive at a distance of seven cells.");
-        Require(player.TryMove(Vector2Int.up) && !movers.Contains(originalMonster) && map.GetContactDamage(monsterPosition) == 0,
+        Require(MovePlayer(player, Vector2Int.up) && !movers.Contains(originalMonster) && map.GetContactDamage(monsterPosition) == 0,
             "Exactly eight cells of separation removes the monster and its contact damage.");
         map.LoadRows(player.FurthestRow);
         Require(!movers.Contains(originalMonster), "A despawned monster does not respawn on row reload.");
@@ -464,17 +562,17 @@ public static class GameplayRegressionChecks
         map = StartMap(new[] { new HazardRowDefinition { row = 4, steppingStoneColumns = new[] { -1, 0, 1 } } }, moving: new[] { chase });
         player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
         SetField(player, "_nextDamageTime", float.PositiveInfinity);
-        Require(player.TryMove(Vector2Int.left), "Approach a bridge without occupying the monster's cell.");
-        for (int row = 1; row <= 3; row++) Require(player.TryMove(Vector2Int.up), "Reach the river bank.");
+        Require(MovePlayer(player, Vector2Int.left), "Approach a bridge without occupying the monster's cell.");
+        for (int row = 1; row <= 3; row++) Require(MovePlayer(player, Vector2Int.up), "Reach the river bank.");
         Require(map.TryGetNextStep(player.Position, new Vector2Int(-1, 4), out var next) && next == new Vector2Int(-1, 4),
             "The player can path across a stepping stone while a monster waits at the bank.");
         Require(!map.TryMoveObstacle(new Vector2Int(0, 3), new Vector2Int(0, 4)), "Monsters cannot directly enter a stepping stone.");
-        Require(player.TryMove(Vector2Int.up) && player.TryMove(Vector2Int.up), "The player can cross the stepping stone.");
+        Require(MovePlayer(player, Vector2Int.up) && MovePlayer(player, Vector2Int.up), "The player can cross the stepping stone.");
         Require(!map.TryGetNextStep(new Vector2Int(0, 3), player.Position, out _), "Monster pathfinding cannot cross the river row.");
         Invoke(map, "AdvanceMovingObstacles", float.MaxValue);
         Require(map.GetContactDamage(new Vector2Int(0, 3)) > 0, "A nearby river-blocked monster remains at the bank.");
-        for (int row = 6; row <= 9; row++) Require(player.TryMove(Vector2Int.up), "Leave the blocked monster behind.");
-        Require(map.GetContactDamage(new Vector2Int(0, 3)) > 0 && player.TryMove(Vector2Int.up) &&
+        for (int row = 6; row <= 9; row++) Require(MovePlayer(player, Vector2Int.up), "Leave the blocked monster behind.");
+        Require(map.GetContactDamage(new Vector2Int(0, 3)) > 0 && MovePlayer(player, Vector2Int.up) &&
             map.GetContactDamage(new Vector2Int(0, 3)) == 0, "A river-blocked monster despawns at eight cells.");
 
         chase.position = new Vector2Int(0, 3);
@@ -483,121 +581,135 @@ public static class GameplayRegressionChecks
         movers = (System.Collections.IList)Field(map, "_movingObstacles");
         originalMonster = movers[0];
         for (int column = 1; column <= MapManager.HalfWidth; column++)
-            Require(player.TryMove(Vector2Int.right), "Move laterally to a Manhattan distance of seven cells.");
+            Require(MovePlayer(player, Vector2Int.right), "Move laterally to a Manhattan distance of seven cells.");
         for (int row = 1; row <= 6; row++)
-            Require(player.TryMove(Vector2Int.up) && movers.Contains(originalMonster), "A diagonally separated monster remains within seven cells.");
-        Require(movers.Contains(originalMonster) && player.TryMove(Vector2Int.up) && !movers.Contains(originalMonster),
+            Require(MovePlayer(player, Vector2Int.up) && movers.Contains(originalMonster), "A diagonally separated monster remains within seven cells.");
+        Require(movers.Contains(originalMonster) && MovePlayer(player, Vector2Int.up) && !movers.Contains(originalMonster),
             "Both coordinate differences count toward the eight-cell despawn threshold.");
     }
 
     private static void CheckSmoothObstacleContact()
     {
-        var definition = new MovingObstacleDefinition { position = new Vector2Int(-2, 2),
-            movement = ObstacleMovement.Patrol, distance = 2, stepInterval = 1f };
-        var map = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { definition });
-        var player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
-        Invoke(map, "AdvanceMovingObstacles", 0f);
-        var mover = Field(map, "_movingObstacles").As<System.Collections.IList>()[0];
-        var view = (MapObstacle)Field(mover, "View");
         var source = new Vector2Int(-2, 2);
         var destination = source + Vector2Int.right;
-        var tile = AssetDatabase.LoadAssetAtPath<TileBase>("Assets/Gameplay/ObstacleTile.asset");
-        Require((Vector2Int)Field(mover, "Position") == source && (Vector2Int)Field(mover, "Destination") == destination &&
-            map.GetContactDamage(source) > 0 && map.GetContactDamage(destination) == 0,
-            "Starting animation reserves a destination without moving logical coordinates or contact damage.");
-        Require(!map.TryMoveObstacle(source, source + Vector2Int.left) && !map.TrySetObstacle(destination, tile),
-            "An obstacle in transit cannot start another move and its destination cannot be overwritten.");
-        Invoke(map, "AdvanceMovingObstacles", 0.25f);
-        Require(Mathf.Approximately(view.transform.position.x, map.GetWorldPosition(new Vector2Int(-2, 2)).x + .25f) &&
-            (Vector2Int)Field(mover, "Position") == source && map.GetContactDamage(destination) == 0 &&
-            player.Health == 3, "Sprites interpolate while contact remains on the departure cell.");
-        GameStateManager.Instance.SetState(GameState.Paused);
-        Vector3 paused = view.transform.position;
-        Invoke(map, "AdvanceMovingObstacles", 1f);
-        Require(view.transform.position == paused && (Vector2Int)Field(mover, "Position") == source,
-            "Pausing leaves both animation and logical coordinates unchanged.");
-        GameStateManager.Instance.SetState(GameState.Playing);
-        Invoke(map, "AdvanceMovingObstacles", 1f);
-        Require(view.transform.position == map.GetWorldPosition(destination) &&
-            (Vector2Int)Field(mover, "Position") == destination && map.GetContactDamage(source) == 0 && map.GetContactDamage(destination) > 0,
-            "Arrival commits sprite position, logical coordinates and contact damage together.");
-        Require(map.TrySetObstacle(source, tile), "Arrival releases the old cell for other obstacles.");
-        map = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { definition });
-        player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
-        Require(player.TryMove(Vector2Int.left) && player.TryMove(Vector2Int.up) && player.TryMove(Vector2Int.up),
-            "Stand next to a rolling obstacle.");
-        Invoke(map, "AdvanceMovingObstacles", 0f);
-        mover = Field(map, "_movingObstacles").As<System.Collections.IList>()[0];
-        view = (MapObstacle)Field(mover, "View");
-        Require(view.transform.position == map.GetWorldPosition(source) && player.Health == 3 &&
-            GameStateManager.Instance.State == GameState.Playing,
-            "Reserving the player's cell does not cause premature death.");
-        Invoke(map, "AdvanceMovingObstacles", 0.999f);
-        Require(player.Health == 3 && map.GetContactDamage(destination) == 0, "The player remains safe until the full movement duration elapses.");
-        Invoke(map, "AdvanceMovingObstacles", 1f);
-        Require(view.transform.position == map.GetWorldPosition(destination) && (Vector2Int)Field(mover, "Position") == destination &&
-            player.Health == 0 && GameStateManager.Instance.State == GameState.GameOver,
-            "Arrival on the player's cell kills immediately after coordinate commit.");
-
-        map = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { definition });
-        player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
-        Require(player.TryMove(Vector2Int.left) && player.TryMove(Vector2Int.up) && player.TryMove(Vector2Int.up),
-            "Approach another rolling obstacle.");
-        Invoke(map, "AdvanceMovingObstacles", 0f);
-        Require(player.TryMove(Vector2Int.right), "The player can leave the reserved cell before arrival.");
-        Invoke(map, "AdvanceMovingObstacles", 1f);
-        Require(player.Health == 3 && player.TryMove(Vector2Int.left) && player.Health == 0,
-            "Leaving before arrival is safe, but entering the new occupied cell is fatal.");
-
-        map = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { definition });
-        player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
-        Require(player.TryMove(Vector2Int.left) && player.TryMove(Vector2Int.left) && player.TryMove(Vector2Int.up),
-            "Approach the departure cell while its obstacle is still moving.");
-        Invoke(map, "AdvanceMovingObstacles", 0f);
-        Require(player.TryMove(Vector2Int.up) && player.Health == 0, "The departure cell remains occupied until arrival.");
-
-        var first = new MovingObstacleDefinition { position = new Vector2Int(-2, 2), movement = ObstacleMovement.Chase };
-        var second = new MovingObstacleDefinition { position = new Vector2Int(0, 2), movement = ObstacleMovement.Chase };
-        map = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { first, second });
-        Require(map.TryMoveObstacle(first.position, destination) && !map.TryMoveObstacle(second.position, destination) &&
-            !map.TryMoveObstacle(second.position, first.position),
-            "Two moving obstacles cannot reserve the same destination or cross an occupied departure cell.");
-        mover = Field(map, "_movingObstacles").As<System.Collections.IList>()[0];
-        float started = (float)Field(mover, "MoveStartTime");
-        Invoke(map, "AdvanceMovingObstacles", started + first.stepInterval);
-        tile = AssetDatabase.LoadAssetAtPath<TileBase>("Assets/Gameplay/ObstacleTile.asset");
-        Require(map.GetContactDamage(first.position) == 0 && map.TrySetObstacle(first.position, tile),
-            "An externally requested move uses the same arrival timing and releases its source.");
-
-        foreach (float duration in new[] { 0.5f, 2f })
+        TileBase tile;
+        foreach (float duration in new[] { .5f, 1f, 2f })
         {
-            definition.stepInterval = duration;
-            map = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { definition });
-            mover = Field(map, "_movingObstacles").As<System.Collections.IList>()[0];
-            view = (MapObstacle)Field(mover, "View");
+            var definition = new MovingObstacleDefinition { position = source, movement = ObstacleMovement.Patrol,
+                distance = 2, stepInterval = duration };
+            var map = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { definition });
+            tile = AssetDatabase.LoadAssetAtPath<TileBase>("Assets/Gameplay/ObstacleTile.asset");
+            var player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
+            Require(MovePlayer(player, Vector2Int.left) && MovePlayer(player, Vector2Int.up) && MovePlayer(player, Vector2Int.up),
+                "Reach the future obstacle destination.");
             Invoke(map, "AdvanceMovingObstacles", 0f);
-            Invoke(map, "AdvanceMovingObstacles", duration * 0.5f);
-            Require((Vector2Int)Field(mover, "Position") == source &&
-                Mathf.Approximately(view.transform.position.x, map.GetWorldPosition(source).x + 0.5f),
-                "Fast and slow obstacles retain their source coordinate halfway through animation.");
+            var mover = Field(map, "_movingObstacles").As<System.Collections.IList>()[0];
+            var view = (MapObstacle)Field(mover, "View");
+            Require((Vector2Int)Field(mover, "Position") == source && (Vector2Int)Field(mover, "Destination") == destination &&
+                map.GetContactDamage(source) == 0 && map.GetContactDamage(destination) == 0 && player.Health == 3,
+                "Starting movement reserves its destination, keeps the source coordinate and disables all contact.");
+            Require(!map.TryMoveObstacle(source, source + Vector2Int.left) &&
+                !map.TrySetObstacle(source, tile) && !map.TrySetObstacle(destination, tile) &&
+                !map.TryPlaceCoin(source) && !map.TryPlaceCoin(destination) &&
+                !map.RegisterCellTrigger(new CellTriggerDefinition { id = "source", position = source }) &&
+                !map.RegisterCellTrigger(new CellTriggerDefinition { id = "destination", position = destination }),
+                "Transit cannot be redirected and neither endpoint can be overwritten despite zero contact damage.");
+            Invoke(map, "AdvanceMovingObstacles", duration * .5f);
+            Require(Mathf.Approximately(view.transform.position.x, map.GetWorldPosition(source).x + .5f) &&
+                (Vector2Int)Field(mover, "Position") == source && player.Health == 3,
+                "Speed controls interpolation without changing the occupied coordinate midway.");
+            GameStateManager.Instance.SetState(GameState.Paused);
+            Vector3 paused = view.transform.position;
             Invoke(map, "AdvanceMovingObstacles", duration);
-            Require((Vector2Int)Field(mover, "Position") == destination && map.GetContactDamage(source) == 0,
-                "Coordinate commit follows the obstacle's configured speed, not a fixed duration.");
+            Require(view.transform.position == paused && (Vector2Int)Field(mover, "Position") == source &&
+                map.GetContactDamage(source) == 0, "Pause preserves the in-flight state without re-enabling contact.");
+            GameStateManager.Instance.SetState(GameState.Playing);
+            Invoke(map, "AdvanceMovingObstacles", duration * .999f);
+            Require(player.Health == 3, "The destination is safe until the configured movement duration has elapsed.");
+            SetField(player, "_nextDamageTime", float.PositiveInfinity);
+            Invoke(map, "AdvanceMovingObstacles", duration);
+            Require(view.transform.position == map.GetWorldPosition(destination) &&
+                (Vector2Int)Field(mover, "Position") == destination && map.GetContactDamage(source) == 0 &&
+                map.GetContactDamage(destination) > 0 && player.Health == 0 && GameStateManager.Instance.State == GameState.GameOver,
+                "Arrival commits coordinates and kills overlapping players despite immunity before the next movement.");
         }
 
-        first.position = new Vector2Int(0, 3);
-        map = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { first });
-        player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
-        destination = first.position + Vector2Int.down;
-        var movers = Field(map, "_movingObstacles").As<System.Collections.IList>();
-        mover = movers[0];
-        Require(map.TryMoveObstacle(first.position, destination), "Start a chase move before testing despawn.");
-        for (int x = 0; x < MapManager.HalfWidth; x++) Require(player.TryMove(Vector2Int.right), "Move away from the chasing obstacle.");
-        for (int row = 0; row < 7; row++) Require(player.TryMove(Vector2Int.up), "Reach the monster despawn distance during animation.");
+        var patrol = new MovingObstacleDefinition { position = source, movement = ObstacleMovement.Patrol,
+            distance = 2, stepInterval = 1f };
+        var dodgeMap = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { patrol });
+        var dodger = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
+        Require(MovePlayer(dodger, Vector2Int.left) && MovePlayer(dodger, Vector2Int.up) && MovePlayer(dodger, Vector2Int.up),
+            "Wait in the future destination.");
+        Invoke(dodgeMap, "AdvanceMovingObstacles", 0f);
+        Invoke(dodgeMap, "AdvanceMovingObstacles", .5f);
+        Require(MovePlayer(dodger, Vector2Int.up), "Dodge before arrival.");
+        Invoke(dodgeMap, "AdvanceMovingObstacles", 1f);
+        var resumed = Field(dodgeMap, "_movingObstacles").As<System.Collections.IList>()[0];
+        Require(dodger.Health == 3 && (Vector2Int)Field(resumed, "Position") == destination &&
+            (bool)Field(resumed, "IsMoving") && (float)Field(resumed, "MoveStartTime") == 1f &&
+            dodgeMap.GetContactDamage(destination) == 0,
+            "A dodged obstacle starts its next step immediately after arrival, without an added rest.");
+
+        var stoppedMap = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { patrol });
         tile = AssetDatabase.LoadAssetAtPath<TileBase>("Assets/Gameplay/ObstacleTile.asset");
-        Require(!movers.Contains(mover) &&
-            map.GetContactDamage(first.position) == 0 && map.TrySetObstacle(destination, tile),
-            "Despawning during animation releases the occupied source and reserved destination.");
+        var entrant = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
+        Require(stoppedMap.TrySetObstacle(new Vector2Int(0, 2), tile) && MovePlayer(entrant, Vector2Int.left) &&
+            MovePlayer(entrant, Vector2Int.left) && MovePlayer(entrant, Vector2Int.up), "Approach the source and block the following patrol step.");
+        Invoke(stoppedMap, "AdvanceMovingObstacles", 0f);
+        Invoke(stoppedMap, "AdvanceMovingObstacles", .5f);
+        Require(MovePlayer(entrant, Vector2Int.up) && entrant.Health == 3, "Entering the departure cell during movement is safe.");
+        stoppedMap.DamagePlayerAt(entrant.Position);
+        Require(entrant.Health == 3 && MovePlayer(entrant, Vector2Int.up), "Direct contact checks ignore a moving source as the player passes it.");
+        Invoke(stoppedMap, "AdvanceMovingObstacles", 1f);
+        var stopped = Field(stoppedMap, "_movingObstacles").As<System.Collections.IList>()[0];
+        Require(!(bool)Field(stopped, "IsMoving") && stoppedMap.GetContactDamage(destination) > 0,
+            "A stopped obstacle is damaging at its confirmed arrival cell.");
+        Require(stoppedMap.TrySetObstacle(source, tile), "Arrival releases the former source for new placement.");
+        SetField(entrant, "_nextDamageTime", float.PositiveInfinity);
+        Require(MovePlayer(entrant, Vector2Int.right) && MovePlayer(entrant, Vector2Int.down) && entrant.Health == 0,
+            "Entering a stopped obstacle's confirmed coordinate still kills immediately despite immunity.");
+
+        var chase = new MovingObstacleDefinition { position = new Vector2Int(0, 3), movement = ObstacleMovement.Chase };
+        var chaseMap = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { chase });
+        var chased = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
+        Invoke(chaseMap, "AdvanceMovingObstacles", 0f);
+        var monster = Field(chaseMap, "_movingObstacles").As<System.Collections.IList>()[0];
+        var committed = (Vector2Int)Field(monster, "Destination");
+        Require(MovePlayer(chased, Vector2Int.left), "Change the player position during a committed chase step.");
+        Invoke(chaseMap, "AdvanceMovingObstacles", chase.stepInterval * .5f);
+        Require((Vector2Int)Field(monster, "Destination") == committed &&
+            (Vector2Int)Field(monster, "Position") == chase.position &&
+            !chaseMap.TryMoveObstacle(chase.position, chase.position + Vector2Int.left),
+            "A monster cannot redirect until its original step finishes.");
+        Invoke(chaseMap, "AdvanceMovingObstacles", chase.stepInterval);
+        Require((Vector2Int)Field(monster, "Position") == committed && (bool)Field(monster, "IsMoving"),
+            "A chasing monster finishes its committed step before immediately choosing the next destination.");
+
+        var first = new MovingObstacleDefinition { position = source, movement = ObstacleMovement.Chase };
+        var second = new MovingObstacleDefinition { position = new Vector2Int(0, 2), movement = ObstacleMovement.Chase };
+        var reservedMap = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { first, second });
+        Require(reservedMap.TryMoveObstacle(first.position, destination) && !reservedMap.TryMoveObstacle(second.position, destination) &&
+            !reservedMap.TryMoveObstacle(second.position, first.position),
+            "Two movers cannot share a reserved destination or overwrite an occupied departure cell.");
+        SetField(reservedMap, "_rewardChance", 1f);
+        var reachable = (System.Collections.Generic.HashSet<Vector2Int>)typeof(MapManager)
+            .GetMethod("GetReachableCells", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(reservedMap, new object[] { false });
+        Invoke(reservedMap, "GenerateRowContent", source.y, reachable);
+        Require(reservedMap.Rewards.Count > 0 && reservedMap.GetRewardPoints(source) == 0 && reservedMap.GetRewardPoints(destination) == 0,
+            "Random rewards cannot occupy a moving obstacle's source or reserved destination while contact is disabled.");
+
+        first.position = new Vector2Int(0, 3);
+        var despawnMap = StartMap(Array.Empty<HazardRowDefinition>(), moving: new[] { first });
+        tile = AssetDatabase.LoadAssetAtPath<TileBase>("Assets/Gameplay/ObstacleTile.asset");
+        var escaping = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
+        var movers = Field(despawnMap, "_movingObstacles").As<System.Collections.IList>();
+        var escapingMonster = movers[0];
+        var reserved = first.position + Vector2Int.down;
+        Require(despawnMap.TryMoveObstacle(first.position, reserved), "Begin a move before despawn.");
+        for (int x = 0; x < MapManager.HalfWidth; x++) Require(MovePlayer(escaping, Vector2Int.right), "Move away from the monster.");
+        for (int row = 0; row < 7; row++) Require(MovePlayer(escaping, Vector2Int.up), "Reach the despawn distance during movement.");
+        Require(!movers.Contains(escapingMonster) && despawnMap.GetContactDamage(first.position) == 0 &&
+            despawnMap.TrySetObstacle(reserved, tile), "Despawn releases both the occupied source and reserved destination.");
     }
 
     private static void CheckMovingSteppingStones()
@@ -611,10 +723,10 @@ public static class GameplayRegressionChecks
             } }
         });
         var player = UnityEngine.Object.FindFirstObjectByType<PlayerController>();
-        Require(player.TryMove(Vector2Int.up) && player.TryMove(Vector2Int.up) &&
-            player.TryMove(Vector2Int.left) && player.TryMove(Vector2Int.left), "Reach the bank next to a moving platform.");
+        Require(MovePlayer(player, Vector2Int.up) && MovePlayer(player, Vector2Int.up) &&
+            MovePlayer(player, Vector2Int.left) && MovePlayer(player, Vector2Int.left), "Reach the bank next to a moving platform.");
         Invoke(map, "AdvanceSteppingStones", 0f);
-        Require(player.TryMove(Vector2Int.up) && player.Position == new Vector2Int(-1, 3),
+        Require(MovePlayer(player, Vector2Int.up) && player.Position == new Vector2Int(-1, 3),
             "A platform already in motion accepts a rider without a recursive move event.");
         int score = UnityEngine.Object.FindFirstObjectByType<GameplayController>().Score;
         Invoke(map, "AdvanceSteppingStones", 0.25f);
@@ -630,7 +742,7 @@ public static class GameplayRegressionChecks
         Require(!map.IsLethal(new Vector2Int(2, 3)) && player.Position == new Vector2Int(-2, 3) &&
             UnityEngine.Object.FindFirstObjectByType<GameplayController>().Score == score,
             "The moving platform reverses while the second stays stationary and carries do not award distance points.");
-        Require(player.TryMove(Vector2Int.up), "Disembark onto the next safe row.");
+        Require(MovePlayer(player, Vector2Int.up), "Disembark onto the next safe row.");
         var template = Field(map, "_patterns").As<MapPattern[]>()[0];
         SetField(template, "_lavaRows", new[] { new HazardRowDefinition { row = 3, steppingStones = new[]
         {

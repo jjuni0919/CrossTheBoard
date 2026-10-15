@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.EnhancedTouch;
@@ -9,6 +10,8 @@ namespace CrossTheBoard
     public sealed class PlayerController : MonoBehaviour
     {
         public const int MaxBackwardSteps = 1;
+        private const float MoveDelay = 0.3f;
+        private const float InputIgnoreDuration = 0.1f;
         [SerializeField] private Vector2Int _startPosition = new(0, 1);
         [SerializeField] private SpriteRenderer _appearance;
         [SerializeField, Range(0.01f, 0.25f)] private float _swipeThreshold = 0.04f;
@@ -21,6 +24,9 @@ namespace CrossTheBoard
         public event Action<Vector2Int, Vector2Int> Moved;
         public event Action<int> HealthChanged;
         private MapManager _map;
+        private readonly Queue<Vector2Int> _moveInputs = new();
+        private float _nextMoveTime;
+        private float _nextInputTime;
         private float _nextDamageTime;
         private Vector2 _swipeStart;
         private int _fingerId = -1;
@@ -40,6 +46,9 @@ namespace CrossTheBoard
             Position = _startPosition;
             FurthestRow = Position.y;
             Health = _maxHealth;
+            _moveInputs.Clear();
+            _nextMoveTime = float.NegativeInfinity;
+            _nextInputTime = float.NegativeInfinity;
             _nextDamageTime = float.NegativeInfinity;
             transform.position = _map.GetWorldPosition(Position);
             HealthChanged?.Invoke(Health);
@@ -50,10 +59,18 @@ namespace CrossTheBoard
         {
             if (_map == null || GameStateManager.Instance.State != GameState.Playing)
             {
+                if (_map == null || GameStateManager.Instance.State != GameState.Paused)
+                    _moveInputs.Clear();
                 _fingerId = -1;
                 _mouseDragging = false;
                 return;
             }
+            ReadMovementInput();
+            ProcessMoveQueue();
+        }
+
+        private void ReadMovementInput()
+        {
             var keyboard = Keyboard.current;
             if (keyboard != null)
             {
@@ -66,7 +83,7 @@ namespace CrossTheBoard
                 {
                     _fingerId = -1;
                     _mouseDragging = false;
-                    TryMove(direction);
+                    QueueMove(direction);
                     return;
                 }
             }
@@ -116,7 +133,23 @@ namespace CrossTheBoard
             Vector2Int direction = Mathf.Abs(delta.x) > Mathf.Abs(delta.y)
                 ? new Vector2Int(delta.x > 0f ? 1 : -1, 0)
                 : new Vector2Int(0, delta.y > 0f ? 1 : -1);
-            TryMove(direction);
+            QueueMove(direction);
+        }
+
+        private void QueueMove(Vector2Int direction)
+        {
+            if (Time.time >= _nextInputTime)
+                _moveInputs.Enqueue(direction);
+        }
+
+        private void ProcessMoveQueue()
+        {
+            while (_moveInputs.Count > 0 && Time.time >= _nextMoveTime && isActiveAndEnabled &&
+                GameStateManager.Instance.State == GameState.Playing)
+            {
+                if (TryMove(_moveInputs.Dequeue()))
+                    break;
+            }
         }
 
         public bool TryMove(Vector2Int direction)
@@ -124,13 +157,16 @@ namespace CrossTheBoard
             if (direction != Vector2Int.up && direction != Vector2Int.down &&
                 direction != Vector2Int.left && direction != Vector2Int.right)
                 throw new ArgumentException("Movement must be one cardinal cell.", nameof(direction));
-            if (_map == null || !isActiveAndEnabled || GameStateManager.Instance.State != GameState.Playing)
+            if (_map == null || !isActiveAndEnabled || GameStateManager.Instance.State != GameState.Playing ||
+                Time.time < _nextMoveTime)
                 return false;
             Vector2Int destination = Position + direction;
             if (destination.y < FurthestRow - MaxBackwardSteps)
                 return false;
             if (!_map.CanMoveTo(destination))
                 return false;
+            _nextMoveTime = Time.time + MoveDelay;
+            _nextInputTime = Time.time + InputIgnoreDuration;
             Vector2Int previous = Position;
             Position = destination;
             FurthestRow = Mathf.Max(FurthestRow, Position.y);
@@ -155,7 +191,10 @@ namespace CrossTheBoard
             Health = Mathf.Max(0, Health - amount);
             _nextDamageTime = Time.time + _damageInterval;
             if (Health == 0)
+            {
+                _moveInputs.Clear();
                 GameStateManager.Instance.SetState(GameState.GameOver);
+            }
             HealthChanged?.Invoke(Health);
             return true;
         }
@@ -165,6 +204,7 @@ namespace CrossTheBoard
             if (_map == null || !isActiveAndEnabled || Health == 0 || GameStateManager.Instance.State != GameState.Playing)
                 return false;
             Health = 0;
+            _moveInputs.Clear();
             GameStateManager.Instance.SetState(GameState.GameOver);
             HealthChanged?.Invoke(Health);
             return true;
@@ -196,6 +236,7 @@ namespace CrossTheBoard
 
         private void OnDisable()
         {
+            _moveInputs.Clear();
             _fingerId = -1;
             _mouseDragging = false;
             EnhancedTouchSupport.Disable();

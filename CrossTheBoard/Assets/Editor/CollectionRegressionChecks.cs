@@ -258,37 +258,37 @@ public static class CollectionRegressionChecks
         Require(!map.TryPlaceCoin(triggerPosition), "Coin cannot overlap trigger.");
         Require(!map.TrySetObstacle(triggerPosition, obstacle), "Obstacle cannot replace trigger.");
         int wallet = save.Data.coins;
-        Require(player.TryMove(Vector2Int.up), "Move onto coin.");
+        Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.up), "Move onto coin.");
         Require(save.Data.coins == wallet + 1 && gameplay.Score == 110 && gameplay.CollectedCoins == 1 && map.GetCoinAmount(new Vector2Int(0, 2)) == 0,
             "Coin collection persists and awards ten bonus points plus new-row score.");
         var overflowCell = new Vector2Int(1, 2);
         var beforeOverflow = save.Data;
         Set(gameplay, "_pointsPerCoin", int.MaxValue);
         bool overflowRejected = false;
-        try { player.TryMove(Vector2Int.right); }
+        try { GameplayRegressionChecks.MovePlayer(player, Vector2Int.right); }
         catch (OverflowException) { overflowRejected = true; }
         finally { Set(gameplay, "_pointsPerCoin", 10); }
         Require(overflowRejected && ReferenceEquals(beforeOverflow, save.Data) && map.GetCoinAmount(overflowCell) == 1 &&
             gameplay.Score == 110 && gameplay.CollectedCoins == 1, "Coin score overflow fails before wallet commit or coin removal.");
-        Require(player.TryMove(Vector2Int.left), "Return from the uncollected overflow coin after restoring its normal point value.");
-        Require(player.TryMove(Vector2Int.down) && player.TryMove(Vector2Int.up), "Revisit collected coin.");
+        Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.left), "Return from the uncollected overflow coin after restoring its normal point value.");
+        Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.down) && GameplayRegressionChecks.MovePlayer(player, Vector2Int.up), "Revisit collected coin.");
         Require(save.Data.coins == wallet + 1 && gameplay.Score == 110 && save.Data.totalForwardCells == 1, "Revisits cannot farm coins, points or unlock progress.");
-        Require(player.TryMove(Vector2Int.up), "Enter trigger row.");
-        Require(player.TryMove(Vector2Int.right), "Move laterally in event row.");
-        Require(player.TryMove(Vector2Int.left), "Revisit cell.");
-        Require(player.TryMove(Vector2Int.down) && player.TryMove(Vector2Int.up), "Revisit event row.");
+        Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.up), "Enter trigger row.");
+        Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.right), "Move laterally in event row.");
+        Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.left), "Revisit cell.");
+        Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.down) && GameplayRegressionChecks.MovePlayer(player, Vector2Int.up), "Revisit event row.");
         Require(rowEvents == 1 && cellEvents == 1, "Cell and row events default to once per run.");
         var failureCell = new Vector2Int(0, 4);
         wallet = save.Data.coins;
         Property(save, "CanSave", false);
-        Require(player.TryMove(Vector2Int.up), "Movement remains possible when saving is unavailable.");
+        Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.up), "Movement remains possible when saving is unavailable.");
         Require(map.GetCoinAmount(failureCell) == 1 && save.Data.coins == wallet, "Persistence failure does not consume coin or change wallet.");
         Property(save, "CanSave", true);
-        Require(player.TryMove(Vector2Int.down) && player.TryMove(Vector2Int.up), "Retry collection after save recovers.");
+        Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.down) && GameplayRegressionChecks.MovePlayer(player, Vector2Int.up), "Retry collection after save recovers.");
         Require(map.GetCoinAmount(failureCell) == 0 && save.Data.coins == wallet + 1 && save.Data.totalForwardCells == 3, "Pending progress commits exactly once with recovered collection.");
         map.LoadRows(player.FurthestRow);
         Require(map.GetCoinAmount(failureCell) == 0, "Loading same rows does not respawn collected coins.");
-        for (int i = 3; i < 10; i++) Require(player.TryMove(Vector2Int.up), "Advance toward special unlock.");
+        for (int i = 3; i < 10; i++) Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.up), "Advance toward special unlock.");
         Require(CharacterCatalog.IsUnlocked(save.Data, "frog") && save.Data.bestDistance == 10, "Gameplay automatically unlocks distance character.");
         Require(save.Load() && save.Data.bestDistance == 10 && CharacterCatalog.IsUnlocked(save.Data, "frog"), "Run progression and unlock persist.");
         int finalScore = gameplay.Score;
@@ -326,10 +326,10 @@ public static class CollectionRegressionChecks
             var original = save.Data;
             int totalForwardCells = original.totalForwardCells;
             Property(save, "CanSave", false);
-            Require(player.TryMove(Vector2Int.up) && gameplay.Score == 100 && save.Data.totalForwardCells == totalForwardCells,
+            Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.up) && gameplay.Score == 100 && save.Data.totalForwardCells == totalForwardCells,
                 "Unsaved safe progress remains pending during the run.");
             Property(save, "CanSave", canSave);
-            Require(player.TryMove(Vector2Int.right) && player.TryMove(Vector2Int.up) && GameStateManager.Instance.State == GameState.GameOver,
+            Require(GameplayRegressionChecks.MovePlayer(player, Vector2Int.right) && GameplayRegressionChecks.MovePlayer(player, Vector2Int.up) && GameStateManager.Instance.State == GameState.GameOver,
                 "An unsafe cell ends the run without extra score or coins.");
             Require(gameplay.Score == 100 && gameplay.CollectedCoins == 0 && save.Data.coins == original.coins,
                 "The fatal forward row grants no points or wallet payment.");
